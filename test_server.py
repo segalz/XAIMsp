@@ -77,6 +77,23 @@ def test_extract_text_from_common_json_shapes() -> None:
     )
 
 
+def test_resolve_grok_command_uses_env_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    grok = tmp_path / "grok"
+    grok.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, str(grok))
+
+    assert server._resolve_grok_command() == str(grok)
+
+
+def test_resolve_grok_command_rejects_missing_env_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, "/missing/grok")
+
+    with pytest.raises(RuntimeError, match="GROK_CLI_PATH"):
+        server._resolve_grok_command()
+
+
 def test_run_grok_builds_safe_default_command(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -87,6 +104,7 @@ def test_run_grok_builds_safe_default_command(
         seen["kwargs"] = kwargs
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
 
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     result = server.grok_ask("say ok", str(tmp_path), 10)
@@ -123,6 +141,7 @@ def test_empty_resume_uses_continue(
         seen["args"] = args
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
 
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     server.grok_continue("say ok", str(tmp_path), 10, resume="")
@@ -143,6 +162,7 @@ def test_code_review_uses_strict_review_flags(
         )
         return subprocess.CompletedProcess(args, 0, stdout="finding", stderr="")
 
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     result = server.grok_code_review(
@@ -180,9 +200,10 @@ def test_prompt_uses_prompt_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         assert "short prompt" in prompt_file.read_text(encoding="utf-8")
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
 
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
-    assert server._run_grok("short prompt", str(tmp_path), 10) == "ok"
+    assert server._run_grok("short prompt", str(tmp_path), 10)["text"] == "ok"
     assert "--prompt-file" in seen["args"]
     assert "-p" not in seen["args"]
     assert not Path(seen["args"][seen["args"].index("--prompt-file") + 1]).exists()
@@ -204,6 +225,7 @@ def test_json_without_text_raises_parse_error(
             args, 0, stdout=json.dumps({"session_id": "abc", "status": "ok"}), stderr=""
         )
 
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="without extractable response text"):
@@ -219,8 +241,25 @@ def test_code_review_trims_preamble(monkeypatch: pytest.MonkeyPatch, tmp_path: P
             stderr="",
         )
 
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     result = server.grok_code_review("x", workspace=str(tmp_path), timeout_s=10)
 
     assert result.startswith("- Severity: P2")
+
+
+def test_raw_output_returns_debug_payload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, 0, stdout=json.dumps({"text": "ok"}), stderr="warn"
+        )
+
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    result = server.grok_ask("prompt", workspace=str(tmp_path), timeout_s=10, raw_output=True)
+
+    assert result["text"] == "ok"
+    assert result["stderr"] == "warn"
+    assert result["parsed"] == {"text": "ok"}

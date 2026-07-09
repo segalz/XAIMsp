@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -38,6 +39,7 @@ _GROK_LOCK = threading.Lock()
 DEFAULT_TIMEOUT_S = 300
 DEFAULT_MODEL = "grok-4.5"
 MAX_TIMEOUT_S = 600
+ENV_GROK_CLI_PATH = "GROK_CLI_PATH"
 SECOND_REVIEW_RULES = (
     "You are a strict second code reviewer. Return findings only. "
     "Do not announce that you will review. Do not repeat primary-analysis findings "
@@ -81,6 +83,23 @@ def _coerce_timeout(timeout_s: int) -> int:
     if timeout_s > MAX_TIMEOUT_S:
         raise ValueError(f"timeout_s must not exceed {MAX_TIMEOUT_S}")
     return timeout_s
+
+
+def _resolve_grok_command() -> str:
+    configured = os.environ.get(ENV_GROK_CLI_PATH, "").strip()
+    if configured:
+        expanded = str(Path(configured).expanduser())
+        if Path(expanded).exists():
+            return expanded
+        found = shutil.which(configured)
+        if found:
+            return found
+        raise RuntimeError(f"{ENV_GROK_CLI_PATH} points to a missing grok CLI: {configured}")
+
+    found = shutil.which("grok")
+    if found:
+        return found
+    raise RuntimeError(f"grok CLI not found on PATH. Set {ENV_GROK_CLI_PATH} if needed.")
 
 
 def _last_json_object(text: str) -> Optional[dict[str, Any]]:
@@ -216,7 +235,7 @@ def _run_grok(
     permission_mode: Optional[str] = None,
     check: bool = False,
     output_format: str = "json",
-) -> str:
+) -> dict[str, Any]:
     if not prompt.strip():
         raise ValueError("prompt must not be empty")
     timeout_s = _coerce_timeout(timeout_s)
@@ -224,7 +243,7 @@ def _run_grok(
         raise ValueError("max_turns must be at least 1")
 
     args = [
-        "grok",
+        _resolve_grok_command(),
         "--no-auto-update",
         "--cwd",
         workspace,
@@ -289,6 +308,13 @@ def _run_grok(
 
     stdout = proc.stdout or ""
     stderr = proc.stderr or ""
+    base_result: dict[str, Any] = {
+        "stdout": stdout,
+        "stderr": stderr,
+        "returncode": proc.returncode,
+        "model": model,
+        "output_format": output_format,
+    }
     if proc.returncode != 0:
         raise RuntimeError(
             f"grok exited {proc.returncode}\n"
@@ -299,22 +325,28 @@ def _run_grok(
     if output_format == "plain":
         fallback = stdout.strip()
         if fallback:
-            return fallback
+            return {**base_result, "text": fallback}
         raise RuntimeError("grok completed without stdout text")
 
     data = _last_json_object(stdout)
     if data:
         text = _extract_text_from_json(data)
         if text:
-            return text
+            return {**base_result, "text": text, "parsed": data}
         raise RuntimeError("grok completed without extractable response text")
 
     # Keep the bridge useful if the CLI changes its JSON shape or falls back to
     # plain output despite the flag. Stderr is diagnostic noise on success.
     fallback = stdout.strip()
     if fallback:
-        return fallback
+        return {**base_result, "text": fallback}
     raise RuntimeError("grok completed without stdout text")
+
+
+def _result_payload(result: dict[str, Any], raw_output: bool) -> str | dict[str, Any]:
+    if raw_output:
+        return result
+    return str(result["text"])
 
 
 @mcp.tool()
@@ -327,7 +359,8 @@ def grok_ask(
     max_turns: Optional[int] = None,
     reasoning_effort: Optional[str] = None,
     rules: Optional[str] = None,
-) -> str:
+    raw_output: bool = False,
+) -> str | dict[str, Any]:
     """Ask Grok a prompt in a new headless CLI session.
 
     Args:
@@ -339,17 +372,21 @@ def grok_ask(
         max_turns: Optional limit for agent turns.
         reasoning_effort: Optional reasoning effort string passed through.
         rules: Optional run-scoped rules appended to Grok's system prompt.
+        raw_output: Return text plus raw stdout/stderr and parsed JSON when true.
     """
     ws = _normalize_workspace(workspace)
-    return _run_grok(
-        prompt,
-        ws,
-        timeout_s,
-        model=model,
-        session_id=session_id,
-        max_turns=max_turns,
-        reasoning_effort=reasoning_effort,
-        rules=rules,
+    return _result_payload(
+        _run_grok(
+            prompt,
+            ws,
+            timeout_s,
+            model=model,
+            session_id=session_id,
+            max_turns=max_turns,
+            reasoning_effort=reasoning_effort,
+            rules=rules,
+        ),
+        raw_output,
     )
 
 
@@ -363,7 +400,8 @@ def grok_continue(
     max_turns: Optional[int] = None,
     reasoning_effort: Optional[str] = None,
     rules: Optional[str] = None,
-) -> str:
+    raw_output: bool = False,
+) -> str | dict[str, Any]:
     """Continue a Grok headless session.
 
     If `resume` is provided, resumes that session id. Otherwise passes
@@ -371,16 +409,19 @@ def grok_continue(
     """
     ws = _normalize_workspace(workspace)
     resume_id = resume.strip() if isinstance(resume, str) else resume
-    return _run_grok(
-        prompt,
-        ws,
-        timeout_s,
-        model=model,
-        resume=resume_id,
-        continue_session=not resume_id,
-        max_turns=max_turns,
-        reasoning_effort=reasoning_effort,
-        rules=rules,
+    return _result_payload(
+        _run_grok(
+            prompt,
+            ws,
+            timeout_s,
+            model=model,
+            resume=resume_id,
+            continue_session=not resume_id,
+            max_turns=max_turns,
+            reasoning_effort=reasoning_effort,
+            rules=rules,
+        ),
+        raw_output,
     )
 
 
@@ -395,7 +436,8 @@ def grok_code_review(
     max_findings: int = 5,
     reasoning_effort: Optional[str] = "high",
     self_check: bool = False,
-) -> str:
+    raw_output: bool = False,
+) -> str | dict[str, Any]:
     """Ask Grok for a strict second-opinion code review.
 
     This tool is intended to run after CodeHelper or manual analysis. It sends
@@ -412,6 +454,7 @@ def grok_code_review(
         max_findings: Maximum findings to request. Must be 1-10.
         reasoning_effort: Optional reasoning effort string passed through.
         self_check: Pass `--check` for an extra verification loop. Costs more time/quota.
+        raw_output: Return text plus raw stdout/stderr when true.
     """
     if not code_or_diff.strip():
         raise ValueError("code_or_diff must not be empty")
@@ -458,10 +501,12 @@ Code or diff under review:
         check=self_check,
         output_format="plain",
     )
-    first_finding = result.find("- Severity:")
+    text = str(result["text"])
+    first_finding = text.find("- Severity:")
     if first_finding > 0:
-        return result[first_finding:].strip()
-    return result
+        text = text[first_finding:].strip()
+        result = {**result, "text": text}
+    return _result_payload(result, raw_output)
 
 
 @mcp.tool()
@@ -469,7 +514,7 @@ def grok_version() -> str:
     """Return the installed Grok CLI version."""
     try:
         proc = subprocess.run(
-            ["grok", "--version"],
+            [_resolve_grok_command(), "--version"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -484,6 +529,10 @@ def grok_version() -> str:
     return ((proc.stdout or "") + (proc.stderr or "")).strip()
 
 
-if __name__ == "__main__":
+def main() -> None:
     _configure_logging()
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

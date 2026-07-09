@@ -33,6 +33,22 @@ python -m pip install --upgrade pip
 pip install -e ".[dev]"
 ```
 
+If Claude Code cannot find `grok`, set `GROK_CLI_PATH` in the MCP server environment:
+
+```json
+{
+  "mcpServers": {
+    "xai": {
+      "command": "/Users/zvisegal/devlope/XAIMsp/.venv/bin/python",
+      "args": ["/Users/zvisegal/devlope/XAIMsp/server.py"],
+      "env": {
+        "GROK_CLI_PATH": "/Users/zvisegal/.local/bin/grok"
+      }
+    }
+  }
+}
+```
+
 Verify:
 
 ```bash
@@ -103,5 +119,6 @@ For each finding include severity, trigger path, why it matters, and a proof tes
 - passes prompts through `--prompt-file`
 - asks Grok not to inspect the workspace or use tools
 - returns findings-only style output when Grok follows the prompt
+- supports `raw_output=true` for debugging stdout/stderr/parser behavior
 
 Still verify Grok findings against real files and tests before editing.

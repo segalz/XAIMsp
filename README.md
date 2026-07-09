@@ -14,6 +14,7 @@ grok --no-auto-update --prompt-file /tmp/prompt.md --cwd /path/to/project --outp
 - Python 3.10+
 - `grok` on `PATH`
 - Auth already configured with `grok login`, or an environment supported by the CLI such as `XAI_API_KEY`
+- Optional: `GROK_CLI_PATH` if `grok` is not on `PATH`
 
 ## Install
 
@@ -44,9 +45,9 @@ Add this server to the MCP host config. Prefer the project venv Python:
 
 ## Tools
 
-- `grok_ask(prompt, workspace?, timeout_s?, model?, session_id?, max_turns?, reasoning_effort?, rules?)`
-- `grok_continue(prompt, workspace?, timeout_s?, model?, resume?, max_turns?, reasoning_effort?, rules?)`
-- `grok_code_review(code_or_diff, question?, primary_analysis?, workspace?, timeout_s?, model?, max_findings?, reasoning_effort?, self_check?)`
+- `grok_ask(prompt, workspace?, timeout_s?, model?, session_id?, max_turns?, reasoning_effort?, rules?, raw_output?)`
+- `grok_continue(prompt, workspace?, timeout_s?, model?, resume?, max_turns?, reasoning_effort?, rules?, raw_output?)`
+- `grok_code_review(code_or_diff, question?, primary_analysis?, workspace?, timeout_s?, model?, max_findings?, reasoning_effort?, self_check?, raw_output?)`
 - `grok_version()`
 
 `workspace` defaults to the MCP server's current directory. Pass the project path explicitly when
@@ -55,6 +56,9 @@ you want Grok to inspect a specific repo.
 Use `grok_code_review` as a second-opinion reviewer after CodeHelper or manual analysis. It embeds
 strict offline-review rules in the prompt, disables web search, and uses `--prompt-file` for large
 prompts.
+
+Set `raw_output=true` on tools when debugging Grok CLI output parsing. The default return remains
+plain assistant text.
 
 See [CLAUDE_CODE_USAGE.md](CLAUDE_CODE_USAGE.md) for the recommended Claude Code workflow.
 
