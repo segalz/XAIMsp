@@ -49,6 +49,14 @@ If Claude Code cannot find `grok`, set `GROK_CLI_PATH` in the MCP server environ
 }
 ```
 
+`GROK_CLI_PATH` is validated strictly:
+
+- Leave it unset if `grok` is already on `PATH`.
+- A bare command such as `grok` resolves through `PATH`.
+- A path value must point to an executable file.
+- Directories and non-executable files are rejected with a clear config error.
+- Avoid relative local files such as `./grok` unless that is the intended executable.
+
 Verify:
 
 ```bash
@@ -122,3 +130,5 @@ For each finding include severity, trigger path, why it matters, and a proof tes
 - supports `raw_output=true` for debugging stdout/stderr/parser behavior
 
 Still verify Grok findings against real files and tests before editing.
+
+See [CLAUDE_CODE_UPDATE_GROK_PATH.md](CLAUDE_CODE_UPDATE_GROK_PATH.md) for the latest short update.

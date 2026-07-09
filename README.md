@@ -16,6 +16,9 @@ grok --no-auto-update --prompt-file /tmp/prompt.md --cwd /path/to/project --outp
 - Auth already configured with `grok login`, or an environment supported by the CLI such as `XAI_API_KEY`
 - Optional: `GROK_CLI_PATH` if `grok` is not on `PATH`
 
+`GROK_CLI_PATH` is strict: bare commands resolve through `PATH`, while path values must point to an
+executable file. Directories and non-executable files are rejected.
+
 ## Install
 
 ```bash
@@ -60,7 +63,9 @@ prompts.
 Set `raw_output=true` on tools when debugging Grok CLI output parsing. The default return remains
 plain assistant text.
 
-See [CLAUDE_CODE_USAGE.md](CLAUDE_CODE_USAGE.md) for the recommended Claude Code workflow.
+See [CLAUDE_CODE_USAGE.md](CLAUDE_CODE_USAGE.md) for the recommended Claude Code workflow and
+[CLAUDE_CODE_UPDATE_GROK_PATH.md](CLAUDE_CODE_UPDATE_GROK_PATH.md) for the latest path-handling
+update.
 
 ## Security
 
