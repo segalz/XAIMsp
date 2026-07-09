@@ -88,13 +88,26 @@ def _coerce_timeout(timeout_s: int) -> int:
 def _resolve_grok_command() -> str:
     configured = os.environ.get(ENV_GROK_CLI_PATH, "").strip()
     if configured:
-        expanded = str(Path(configured).expanduser())
-        if Path(expanded).exists():
-            return expanded
         found = shutil.which(configured)
-        if found:
+        if found and os.access(found, os.X_OK):
             return found
-        raise RuntimeError(f"{ENV_GROK_CLI_PATH} points to a missing grok CLI: {configured}")
+
+        configured_path = Path(configured).expanduser()
+        has_path_separator = "/" in configured or (
+            os.altsep is not None and os.altsep in configured
+        )
+        if has_path_separator:
+            if not configured_path.exists():
+                raise RuntimeError(
+                    f"{ENV_GROK_CLI_PATH} points to a missing grok CLI: {configured}"
+                )
+            if not configured_path.is_file() or not os.access(configured_path, os.X_OK):
+                raise RuntimeError(
+                    f"{ENV_GROK_CLI_PATH} must point to an executable file: {configured}"
+                )
+            return str(configured_path)
+
+        raise RuntimeError(f"{ENV_GROK_CLI_PATH} command not found on PATH: {configured}")
 
     found = shutil.which("grok")
     if found:

@@ -82,9 +82,48 @@ def test_resolve_grok_command_uses_env_path(
 ) -> None:
     grok = tmp_path / "grok"
     grok.write_text("#!/bin/sh\n", encoding="utf-8")
+    grok.chmod(0o755)
     monkeypatch.setenv(server.ENV_GROK_CLI_PATH, str(grok))
 
     assert server._resolve_grok_command() == str(grok)
+
+
+def test_resolve_grok_command_uses_path_for_bare_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    local_grok = tmp_path / "grok"
+    local_grok.write_text("not executable", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    path_grok = bin_dir / "grok"
+    path_grok.write_text("#!/bin/sh\n", encoding="utf-8")
+    path_grok.chmod(0o755)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, "grok")
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert server._resolve_grok_command() == str(path_grok)
+
+
+def test_resolve_grok_command_rejects_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, str(tmp_path))
+
+    with pytest.raises(RuntimeError, match="executable file"):
+        server._resolve_grok_command()
+
+
+def test_resolve_grok_command_rejects_non_executable_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    grok = tmp_path / "grok"
+    grok.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, str(grok))
+
+    with pytest.raises(RuntimeError, match="executable file"):
+        server._resolve_grok_command()
 
 
 def test_resolve_grok_command_rejects_missing_env_path(monkeypatch: pytest.MonkeyPatch) -> None:
