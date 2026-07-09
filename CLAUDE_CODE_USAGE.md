@@ -122,13 +122,69 @@ For each finding include severity, trigger path, why it matters, and a proof tes
 
 `grok_code_review` is optimized for offline pasted-code review:
 
-- uses `grok-4.5` by default
-- disables web search
-- passes prompts through `--prompt-file`
-- asks Grok not to inspect the workspace or use tools
-- returns findings-only style output when Grok follows the prompt
-- supports `raw_output=true` for debugging stdout/stderr/parser behavior
+- Uses `grok-4.5` by default.
+- Disables web search.
+- Passes prompts through `--prompt-file`.
+- Asks Grok not to inspect the workspace or use tools.
+- Returns findings-only style output when Grok follows the prompt.
+- Supports `raw_output=true` for debugging stdout/stderr/parser behavior.
 
 Still verify Grok findings against real files and tests before editing.
+
+## Debugging
+
+Enable verbose debug logging by setting `XAI_MCP_DEBUG=true` in the MCP environment config:
+
+```json
+{
+  "mcpServers": {
+    "xai": {
+      "command": "/Users/zvisegal/devlope/XAIMsp/.venv/bin/python",
+      "args": ["/Users/zvisegal/devlope/XAIMsp/server.py"],
+      "env": {
+        "GROK_CLI_PATH": "/Users/zvisegal/.local/bin/grok",
+        "XAI_MCP_DEBUG": "true"
+      }
+    }
+  }
+}
+```
+
+This enables bridge diagnostics on stderr. Keep it off by default because MCP stdio servers should
+stay quiet unless you are actively debugging startup or CLI invocation issues.
+
+## Advanced Tool Parameters
+
+### 1. Verification Loops (`self_check`)
+In `grok_code_review`, `self_check=true` passes `--check` to the Grok CLI. Use it sparingly for
+high-risk reviews only; it costs more time and quota, and it does not replace local verification.
+
+### 2. Session Management & Continuation
+- **Starting a Named Session**: `grok_ask` can receive `session_id`, but the Grok CLI expects a
+  valid UUID for a new session.
+- **Resuming a Session**: `grok_continue` can receive `resume` to pass a specific session id to
+  `--resume`.
+- **Continuing the Last Session**: If `resume` is omitted, `grok_continue` passes `--continue`,
+  which means the most recent Grok session for that workspace. Prefer an explicit `resume` id when
+  exact conversation continuity matters.
+
+### 3. Reasoning & Effort Control
+You can pass `reasoning_effort` to `grok_ask`, `grok_continue`, and `grok_code_review`. The default
+for code reviews is `"high"`. Supported values depend on the installed Grok CLI/model.
+
+### 4. Custom Rules
+`grok_ask` and `grok_continue` support `rules` for run-scoped custom instructions. For code review,
+prefer `grok_code_review`; it already embeds the strict offline-review prompt that worked best in
+testing.
+
+### 5. Raw Output
+Set `raw_output=true` to receive a detailed dictionary rather than just the final text response. Use
+this for debugging parser or CLI behavior, not as the normal workflow. The dictionary contains:
+
+- `text`: The extracted assistant response.
+- `stdout`: The raw stdout from the CLI.
+- `stderr`: The raw stderr from the CLI (useful for diagnosing warnings or authentication issue details).
+- `returncode`: The subprocess exit code.
+- `parsed`: The parsed JSON payload object (if JSON output format was used).
 
 See [CLAUDE_CODE_UPDATE_GROK_PATH.md](CLAUDE_CODE_UPDATE_GROK_PATH.md) for the latest short update.

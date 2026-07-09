@@ -57,11 +57,20 @@ Add this server to the MCP host config. Prefer the project venv Python:
 you want Grok to inspect a specific repo.
 
 Use `grok_code_review` as a second-opinion reviewer after CodeHelper or manual analysis. It embeds
-strict offline-review rules in the prompt, disables web search, and uses `--prompt-file` for large
-prompts.
+strict offline-review rules in the prompt, disables web search, and uses `--prompt-file`.
 
-Set `raw_output=true` on tools when debugging Grok CLI output parsing. The default return remains
-plain assistant text.
+Advanced parameters:
+
+- `self_check=true`: Passes `--check` for an extra Grok verification loop. Use sparingly because it
+  costs more time and quota.
+- `raw_output=true`: Returns a debug payload with extracted text, stdout, stderr, return code, and
+  parsed JSON when available.
+- `session_id` and `resume`: Useful for explicit Grok session control. `session_id` should be a
+  valid UUID for new sessions.
+- `rules`: Available on generic ask/continue calls. Prefer `grok_code_review` for second-opinion
+  code review because it already uses the tuned offline-review prompt.
+
+Set `XAI_MCP_DEBUG=true` only when diagnosing bridge startup or CLI invocation issues.
 
 See [CLAUDE_CODE_USAGE.md](CLAUDE_CODE_USAGE.md) for the recommended Claude Code workflow and
 [CLAUDE_CODE_UPDATE_GROK_PATH.md](CLAUDE_CODE_UPDATE_GROK_PATH.md) for the latest path-handling
