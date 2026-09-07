@@ -663,3 +663,43 @@ def test_a_normal_call_carries_no_read_only_rules(
 
     assert "--rules" not in seen["args"]
     assert seen["args"][seen["args"].index("--permission-mode") + 1] == "auto"
+
+
+def _seen_args(monkeypatch: pytest.MonkeyPatch) -> dict:
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(
+            args, 0, stdout=json.dumps({"text": "ok", "stopReason": "end_turn"}), stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    return seen
+
+
+def test_a_turn_ceiling_is_always_sent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Otherwise the ceiling is whatever the CLI happens to default to that
+    # release, which nothing here pins or notices changing.
+    seen = _seen_args(monkeypatch)
+    server.grok_ask("prompt", workspace=str(tmp_path), timeout_s=10)
+
+    idx = seen["args"].index("--max-turns")
+    assert seen["args"][idx + 1] == str(server.DEFAULT_MAX_TURNS)
+
+
+def test_an_explicit_turn_budget_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = _seen_args(monkeypatch)
+    server.grok_ask("prompt", workspace=str(tmp_path), timeout_s=10, max_turns=200)
+
+    assert seen["args"][seen["args"].index("--max-turns") + 1] == "200"
+
+
+def test_the_default_ceiling_clears_real_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The heaviest task measured against this bridge finished in 5 turns. A
+    # default that could cut off ordinary work would be worse than none.
+    assert server.DEFAULT_MAX_TURNS >= 25

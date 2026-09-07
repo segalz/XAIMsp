@@ -36,6 +36,12 @@ log = logging.getLogger("xai_grok_bridge")
 _GROK_LOCK = threading.Lock()
 
 DEFAULT_TIMEOUT_S = 300
+# grok documents no default of its own for --max-turns, so without this the
+# ceiling was whatever the CLI happened to use that release. 50 is far above
+# real work -- the heaviest task measured here finished in 5 -- so it does not
+# constrain an honest run; it stops a stuck loop from spending quota silently.
+# A caller who genuinely needs more passes a larger max_turns.
+DEFAULT_MAX_TURNS = 50
 DEFAULT_MODEL = "grok-4.6"
 MAX_TIMEOUT_S = 600
 ENV_GROK_CLI_PATH = "GROK_CLI_PATH"
@@ -318,6 +324,8 @@ def _run_grok(
     if not prompt.strip():
         raise ValueError("prompt must not be empty")
     timeout_s = _coerce_timeout(timeout_s)
+    if max_turns is None:
+        max_turns = DEFAULT_MAX_TURNS
     if max_turns is not None and max_turns < 1:
         raise ValueError("max_turns must be at least 1")
     effective_permission_mode = _normalize_permission_mode(permission_mode)

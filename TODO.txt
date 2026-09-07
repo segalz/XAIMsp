@@ -67,10 +67,19 @@ parallel grok calls will queue behind it and gain nothing. Worth knowing before
 anyone designs a swarm on top of this bridge.
 
 
-Open: no default max_turns
---------------------------
+Closed: the turn ceiling is pinned
+----------------------------------
 
-`--max-turns` is sent only when a caller supplies it, so the CLI's own default
-applies -- unknown, unpinned, and free to change on upgrade. Note that
-`num_turns` is documented as the same counter family, "not a guarantee of exact
-equality", so the two will not always agree.
+`--max-turns` used to be sent only when a caller supplied one, leaving whatever
+ceiling the CLI happened to ship that release. grok documents no default and
+`--help` states none, so it was unknown and free to change under us.
+
+Every call now sends `DEFAULT_MAX_TURNS` (50) unless the caller passes its own,
+and a caller who needs more simply passes more. 50 is far above real work --
+the heaviest task measured against this bridge finished in 5 turns -- so it does
+not constrain an honest run. What it stops is a stuck loop quietly spending
+quota.
+
+Note `num_turns` is documented as the same counter family as `--max-turns` but
+"not a guarantee of exact equality when rounds lack usage or hit gates", so the
+two will not always agree exactly.

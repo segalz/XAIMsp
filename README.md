@@ -111,6 +111,8 @@ Advanced parameters:
   and the workspace is a working directory, not a security boundary. Point it at
   a repository whose changes you can see and revert.
 
+- `max_turns`: Defaults to 50. Far above ordinary work, low enough that a stuck
+  loop stops spending quota. Pass a larger value for a genuinely long task.
 - `self_check=true`: Passes `--check` for an extra Grok verification loop. Use sparingly because it
   costs more time and quota.
 - `raw_output=true`: Returns a debug payload with extracted text, stdout, stderr, return code, and
