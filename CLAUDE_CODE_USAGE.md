@@ -122,7 +122,7 @@ For each finding include severity, trigger path, why it matters, and a proof tes
 
 `grok_code_review` is optimized for offline pasted-code review:
 
-- Uses `grok-4.5` by default.
+- Uses `grok-4.6` by default.
 - Disables web search.
 - Passes prompts through `--prompt-file`.
 - Asks Grok not to inspect the workspace or use tools.

@@ -1,5 +1,6 @@
 import inspect
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -7,6 +8,84 @@ from pathlib import Path
 import pytest
 
 import server
+
+# Windows has no execute bit -- os.access(X_OK) is true for any readable file --
+# and shutil.which only finds names carrying a PATHEXT extension. A test that
+# turns on either fact is describing POSIX, not the bridge.
+posix_only = pytest.mark.skipif(
+    os.name == "nt", reason="depends on POSIX execute bits and extensionless PATH lookup"
+)
+
+
+@pytest.fixture(autouse=True)
+def isolate_bridge_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(server.ENV_GROK_WSL_DISTRO, raising=False)
+    monkeypatch.delenv(server.ENV_GROK_CLI_PATH, raising=False)
+
+
+@pytest.mark.parametrize("source,expected", [
+    (r"C:\Develop\My Project", "/mnt/c/Develop/My Project"),
+    ("D:/Temp/prompt.md", "/mnt/d/Temp/prompt.md"),
+    ("/home/segal/project", "/home/segal/project"),
+])
+def test_to_wsl_path(source: str, expected: str) -> None:
+    assert server._to_wsl_path(source) == expected
+
+
+@pytest.mark.parametrize("configured", ["", "grok", "./grok", "~/bin/grok", r"C:\grok.exe"])
+def test_wsl_requires_absolute_linux_executable(monkeypatch, configured) -> None:
+    monkeypatch.setenv(server.ENV_GROK_WSL_DISTRO, "Ubuntu")
+    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, configured)
+    with pytest.raises(RuntimeError, match="absolute Linux path"):
+        server._grok_argv_prefix()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_wsl_run_converts_paths_and_cleans_prompt(monkeypatch, tmp_path, fails) -> None:
+    monkeypatch.setenv(server.ENV_GROK_WSL_DISTRO, "Ubuntu")
+    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, "/home/segal/.grok/bin/grok")
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: pytest.fail("native resolver"))
+    real_named_temp = tempfile.NamedTemporaryFile
+    created = []
+
+    def named_temp(*args, **kwargs):
+        result = real_named_temp(*args, dir=tmp_path, **kwargs)
+        created.append(Path(result.name))
+        return result
+
+    def fake_run(args, **kwargs):
+        assert args[:5] == ["wsl.exe", "-d", "Ubuntu", "--", "/home/segal/.grok/bin/grok"]
+        assert args[args.index("--cwd") + 1] == "/mnt/c/Develop/My Project"
+        assert kwargs["cwd"] == r"C:\Develop\My Project"
+        assert args[args.index("--prompt-file") + 1] == server._to_wsl_path(str(created[0]))
+        assert created[0].read_text(encoding="utf-8") == "prompt text"
+        if fails:
+            raise subprocess.TimeoutExpired(args, 10)
+        return subprocess.CompletedProcess(args, 0, stdout='{"text":"ok"}', stderr="")
+
+    monkeypatch.setattr(server.tempfile, "NamedTemporaryFile", named_temp)
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    if fails:
+        with pytest.raises(RuntimeError, match="timed out"):
+            server._run_grok("prompt text", r"C:\Develop\My Project", 10)
+    else:
+        assert server._run_grok("prompt text", r"C:\Develop\My Project", 10)["text"] == "ok"
+    assert created and not created[0].exists()
+
+
+def test_wsl_version_uses_same_prefix(monkeypatch) -> None:
+    monkeypatch.setenv(server.ENV_GROK_WSL_DISTRO, "Ubuntu")
+    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, "/home/segal/.grok/bin/grok")
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: pytest.fail("native resolver"))
+
+    def fake_run(args, **kwargs):
+        assert args == [
+            "wsl.exe", "-d", "Ubuntu", "--", "/home/segal/.grok/bin/grok", "--version"
+        ]
+        return subprocess.CompletedProcess(args, 0, stdout="1.0.13\n", stderr="")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    assert server.grok_version() == "1.0.13"
 
 
 def test_normalize_workspace_accepts_existing_dir(tmp_path: Path) -> None:
@@ -88,6 +167,7 @@ def test_resolve_grok_command_uses_env_path(
     assert server._resolve_grok_command() == str(grok)
 
 
+@posix_only
 def test_resolve_grok_command_uses_path_for_bare_command(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -115,6 +195,7 @@ def test_resolve_grok_command_rejects_directory(
         server._resolve_grok_command()
 
 
+@posix_only
 def test_resolve_grok_command_rejects_non_executable_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -153,7 +234,8 @@ def test_run_grok_builds_safe_default_command(
     assert "--prompt-file" in seen["args"]
     assert "-p" not in seen["args"]
     assert "--always-approve" not in seen["args"]
-    assert seen["args"][seen["args"].index("--model") + 1] == "grok-4.5"
+    assert "--permission-mode" not in seen["args"]
+    assert seen["args"][seen["args"].index("--model") + 1] == "grok-4.6"
     assert "--output-format" in seen["args"]
     assert seen["kwargs"]["cwd"] == str(tmp_path)
     assert seen["kwargs"]["encoding"] == "utf-8"
@@ -187,6 +269,88 @@ def test_empty_resume_uses_continue(
 
     assert "--continue" in seen["args"]
     assert "--resume" not in seen["args"]
+
+
+def test_grok_ask_accept_edits_permission_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
+
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    result = server.grok_ask(
+        "say ok",
+        workspace=str(tmp_path),
+        timeout_s=10,
+        permission_mode="acceptEdits",
+        raw_output=True,
+    )
+
+    idx = seen["args"].index("--permission-mode")
+    assert seen["args"][idx + 1] == "auto"
+    assert result["permission_mode"] == "acceptEdits"
+    assert result["permission_mode_requested"] == "acceptEdits"
+    assert result["permission_mode_effective"] == "auto"
+
+
+def test_grok_ask_auto_permission_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
+
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    result = server.grok_ask(
+        "say ok",
+        workspace=str(tmp_path),
+        timeout_s=10,
+        permission_mode="auto",
+        raw_output=True,
+    )
+
+    idx = seen["args"].index("--permission-mode")
+    assert seen["args"][idx + 1] == "auto"
+    assert result["permission_mode"] == "auto"
+    assert result["permission_mode_requested"] == "auto"
+    assert result["permission_mode_effective"] == "auto"
+
+
+def test_grok_ask_rejects_invalid_permission_mode(tmp_path: Path) -> None:
+    for invalid_mode in ("bypassPermissions", "dontAsk", "default", "  "):
+        with pytest.raises(ValueError, match="unsupported permission_mode"):
+            server.grok_ask(
+                "say ok",
+                workspace=str(tmp_path),
+                timeout_s=10,
+                permission_mode=invalid_mode,
+            )
+
+
+def test_grok_continue_default_omits_permission_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
+
+    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    server.grok_continue("say ok", str(tmp_path), 10)
+
+    assert "--permission-mode" not in seen["args"]
 
 
 def test_code_review_uses_strict_review_flags(

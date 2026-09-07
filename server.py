@@ -37,9 +37,17 @@ log = logging.getLogger("xai_grok_bridge")
 _GROK_LOCK = threading.Lock()
 
 DEFAULT_TIMEOUT_S = 300
-DEFAULT_MODEL = "grok-4.5"
+DEFAULT_MODEL = "grok-4.6"
 MAX_TIMEOUT_S = 600
 ENV_GROK_CLI_PATH = "GROK_CLI_PATH"
+# Windows Smart App Control refuses to run the unsigned grok.exe, so the CLI can
+# only be reached through a WSL distribution. Setting GROK_WSL_DISTRO to the
+# distro name routes every invocation through `wsl.exe -d <distro> --`, and
+# GROK_CLI_PATH is then read as a path inside that distro rather than on Windows.
+ENV_GROK_WSL_DISTRO = "GROK_WSL_DISTRO"
+_WINDOWS_DRIVE_PATH = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+_PERMISSION_MODE_ALLOWED = frozenset({"acceptEdits", "auto"})
+_PERMISSION_MODE_EFFECTIVE = "auto"
 SECOND_REVIEW_RULES = (
     "You are a strict second code reviewer. Return findings only. "
     "Do not announce that you will review. Do not repeat primary-analysis findings "
@@ -85,6 +93,52 @@ def _coerce_timeout(timeout_s: int) -> int:
     return timeout_s
 
 
+def _normalize_permission_mode(permission_mode: Optional[str]) -> Optional[str]:
+    if permission_mode is None:
+        return None
+    requested = permission_mode.strip()
+    if requested not in _PERMISSION_MODE_ALLOWED:
+        raise ValueError(
+            "unsupported permission_mode; allowed values are 'acceptEdits' and 'auto'"
+        )
+    return _PERMISSION_MODE_EFFECTIVE
+
+
+def _wsl_distro() -> str:
+    """Name of the WSL distro to route through, or "" to run grok on Windows."""
+    return os.environ.get(ENV_GROK_WSL_DISTRO, "").strip()
+
+
+def _to_wsl_path(value: str) -> str:
+    """Translate a Windows path into the form the distro sees under /mnt.
+
+    Anything that is not drive-qualified is passed through with separators
+    normalised, so a path already written in Linux form survives untouched.
+    """
+    match = _WINDOWS_DRIVE_PATH.match(value)
+    if match:
+        drive, rest = match.groups()
+        return f"/mnt/{drive.lower()}/{rest.replace(chr(92), '/')}"
+    return value.replace("\\", "/")
+
+
+def _grok_argv_prefix() -> list[str]:
+    """The argv head that starts the CLI, with or without the WSL hop."""
+    distro = _wsl_distro()
+    if not distro:
+        return [_resolve_grok_command()]
+
+    # WSL does not load login-shell PATH settings. Require an explicit Linux
+    # path, but leave executable existence/permissions to the distro.
+    configured = os.environ.get(ENV_GROK_CLI_PATH, "").strip()
+    if not configured.startswith("/") or configured.startswith("//") or "\\" in configured:
+        raise RuntimeError(
+            f"{ENV_GROK_CLI_PATH} must be an absolute Linux path when "
+            f"{ENV_GROK_WSL_DISTRO} is set (for example /home/segal/.grok/bin/grok)"
+        )
+    return ["wsl.exe", "-d", distro, "--", configured]
+
+
 def _resolve_grok_command() -> str:
     configured = os.environ.get(ENV_GROK_CLI_PATH, "").strip()
     if configured:
@@ -93,7 +147,10 @@ def _resolve_grok_command() -> str:
             return found
 
         configured_path = Path(configured).expanduser()
-        has_path_separator = "/" in configured or (
+        # os.sep is the separator that differs per platform; testing "/" alone
+        # matched nothing on Windows, so a full C:\...\grok path fell through to
+        # the "not on PATH" error instead of being validated as a path.
+        has_path_separator = os.sep in configured or (
             os.altsep is not None and os.altsep in configured
         )
         if has_path_separator:
@@ -254,12 +311,17 @@ def _run_grok(
     timeout_s = _coerce_timeout(timeout_s)
     if max_turns is not None and max_turns < 1:
         raise ValueError("max_turns must be at least 1")
+    effective_permission_mode = _normalize_permission_mode(permission_mode)
+
+    # Every path handed to the CLI has to be spelled the way the CLI's own
+    # filesystem spells it. Under WSL that is /mnt/c/..., not C:\...
+    for_cli = _to_wsl_path if _wsl_distro() else (lambda value: value)
 
     args = [
-        _resolve_grok_command(),
+        *_grok_argv_prefix(),
         "--no-auto-update",
         "--cwd",
-        workspace,
+        for_cli(workspace),
         "--output-format",
         output_format,
         "--no-alt-screen",
@@ -270,7 +332,7 @@ def _run_grok(
     ) as tmp:
         tmp.write(prompt)
         prompt_file = tmp.name
-    args.extend(["--prompt-file", prompt_file])
+    args.extend(["--prompt-file", for_cli(prompt_file)])
     if model:
         args.extend(["--model", model])
     if session_id:
@@ -287,8 +349,8 @@ def _run_grok(
         args.extend(["--rules", rules])
     if disable_web_search:
         args.append("--disable-web-search")
-    if permission_mode:
-        args.extend(["--permission-mode", permission_mode])
+    if effective_permission_mode:
+        args.extend(["--permission-mode", effective_permission_mode])
     if check:
         args.append("--check")
 
@@ -327,6 +389,9 @@ def _run_grok(
         "returncode": proc.returncode,
         "model": model,
         "output_format": output_format,
+        "permission_mode": permission_mode,
+        "permission_mode_requested": permission_mode,
+        "permission_mode_effective": effective_permission_mode,
     }
     if proc.returncode != 0:
         raise RuntimeError(
@@ -372,6 +437,7 @@ def grok_ask(
     max_turns: Optional[int] = None,
     reasoning_effort: Optional[str] = None,
     rules: Optional[str] = None,
+    permission_mode: Optional[str] = None,
     raw_output: bool = False,
 ) -> str | dict[str, Any]:
     """Ask Grok a prompt in a new headless CLI session.
@@ -385,6 +451,8 @@ def grok_ask(
         max_turns: Optional limit for agent turns.
         reasoning_effort: Optional reasoning effort string passed through.
         rules: Optional run-scoped rules appended to Grok's system prompt.
+        permission_mode: Opt-in 'acceptEdits' or 'auto' for headless edits;
+            omit for the CLI default.
         raw_output: Return text plus raw stdout/stderr and parsed JSON when true.
     """
     ws = _normalize_workspace(workspace)
@@ -398,6 +466,7 @@ def grok_ask(
             max_turns=max_turns,
             reasoning_effort=reasoning_effort,
             rules=rules,
+            permission_mode=permission_mode,
         ),
         raw_output,
     )
@@ -413,6 +482,7 @@ def grok_continue(
     max_turns: Optional[int] = None,
     reasoning_effort: Optional[str] = None,
     rules: Optional[str] = None,
+    permission_mode: Optional[str] = None,
     raw_output: bool = False,
 ) -> str | dict[str, Any]:
     """Continue a Grok headless session.
@@ -433,6 +503,7 @@ def grok_continue(
             max_turns=max_turns,
             reasoning_effort=reasoning_effort,
             rules=rules,
+            permission_mode=permission_mode,
         ),
         raw_output,
     )
@@ -527,7 +598,7 @@ def grok_version() -> str:
     """Return the installed Grok CLI version."""
     try:
         proc = subprocess.run(
-            [_resolve_grok_command(), "--version"],
+            [*_grok_argv_prefix(), "--version"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
