@@ -141,6 +141,20 @@ An earlier version held a single mutex across every invocation, so a second
 caller always waited for the first. If you are building anything that fans work
 out across several calls, that is no longer the constraint it was.
 
+### Grok splits work by itself
+
+Before building anything that fans a task out across several `grok_ask` calls:
+Grok already does this internally. Subagents are child sessions with their own
+context windows, enabled by default, and the main agent calls `spawn_subagent`
+when it sees work worth delegating. It survives headless invocation through this
+bridge -- a request naming three independent questions produced three
+`spawn_subagent` calls, 15 model calls against 3 main-agent turns, and one
+combined answer.
+
+So ask for the delegation in the prompt rather than orchestrating it from
+outside. Splitting into separate bridge calls costs a process each and puts the
+recombining on the caller, which is work Grok has already done.
+
 ## Security
 
 Grok is an agentic CLI. `workspace` is a working directory, not a security boundary. The bridge
