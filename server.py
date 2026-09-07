@@ -48,6 +48,23 @@ _WINDOWS_DRIVE_PATH = re.compile(r"^([A-Za-z]):[\\/](.*)$")
 # The only stopReason that means grok finished on its own terms. Anything else
 # -- "cancelled" is the one seen in practice -- means the reply is partial.
 _STOP_REASON_COMPLETE = "end_turn"
+# xAI documents end.stopReason as one of end_turn, max_tokens,
+# max_turn_requests, refusal, cancelled. "cancelled" fires when a turn ends
+# early on interrupt, permission rejection, or the turn limit -- and in headless
+# mode the usual one is permission: the agent reached for a tool that needs
+# approval and there is nobody to give it. Verified by experiment: a task that
+# must write a file cancels on turn 1 with no permission mode and completes with
+# one, while read-only work (read_file, grep, git log) is never gated.
+_STOP_REASON_CAUSES = {
+    "cancelled": (
+        " Usually this means grok needed approval for a tool -- writing a file, "
+        "running a command that is not read-only -- and headless has nobody to "
+        "approve it. Pass permission_mode, or keep the task read-only."
+    ),
+    "max_turn_requests": " It ran out of agentic turns; raise max_turns.",
+    "max_tokens": " It hit the output token ceiling.",
+    "refusal": " The model declined to answer.",
+}
 _PERMISSION_MODE_ALLOWED = frozenset({"acceptEdits", "auto"})
 _PERMISSION_MODE_EFFECTIVE = "auto"
 SECOND_REVIEW_RULES = (
@@ -97,7 +114,13 @@ def _coerce_timeout(timeout_s: int) -> int:
 
 def _normalize_permission_mode(permission_mode: Optional[str]) -> Optional[str]:
     if permission_mode is None:
-        return None
+        # Headless grok has nobody to approve a tool call, so anything needing a
+        # write or a non-read-only command used to end the turn as stopReason
+        # "cancelled" with narration in place of an answer. Approving by default
+        # is what makes those runs finish. It is a real grant: grok can write
+        # files and run commands in the workspace without asking, and the
+        # workspace is a working directory, not a security boundary.
+        return _PERMISSION_MODE_EFFECTIVE
     requested = permission_mode.strip()
     if requested not in _PERMISSION_MODE_ALLOWED:
         raise ValueError(
@@ -430,10 +453,11 @@ def _incomplete_banner(stop_reason: Any, data: dict[str, Any]) -> str:
     """
     turns = data.get("num_turns")
     turns_note = f" after {turns} turn(s)" if turns is not None else ""
+    cause = _STOP_REASON_CAUSES.get(str(stop_reason), "")
     return (
         f"[INCOMPLETE: grok stopped with stopReason={stop_reason!r}{turns_note}, "
         "so what follows is whatever it had produced by then -- often narration "
-        "rather than a result. Do not treat it as a finished answer.]\n\n"
+        f"rather than a result. Do not treat it as a finished answer.{cause}]\n\n"
     )
 
 

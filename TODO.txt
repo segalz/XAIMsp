@@ -4,49 +4,55 @@ TODO
 Closed: Grok answers arrive truncated
 -------------------------------------
 
-Reported, reproduced and handled 2026-09-07.
+Reported, reproduced, diagnosed and handled 2026-09-07.
 
-There are two ways a run ends early, and the bridge treated them differently:
+WHAT WAS HAPPENING
+
+Two ways a run ends early, treated differently by the bridge:
 
 1. The turn budget is exhausted. grok exits 1 with `Error: max turns reached`,
    and a non-zero return code already raised. This case was honest.
 
-2. The CLI stops itself. grok exits 0 with `"stopReason": "cancelled"` and a
-   `num_turns` BELOW the budget it was given. Only `proc.returncode` was
-   inspected, so this read as success.
+2. The CLI stops itself. grok exits 0 with `"stopReason": "cancelled"`. Only
+   `proc.returncode` was inspected, so this read as success. grok's `text`
+   accumulates narration across turns, so what came back was narration -- "I'll
+   read the files, then count them" -- presented as the answer.
 
-Case 2 was the defect. grok's `text` accumulates narration across turns, so a
-run that ends before the work is done leaves narration alone -- "I'll read the
-files, then count them" -- and that was handed back as the answer. Which of the
-two happens is not deterministic: the same prompt and budget produced each on
-different runs.
+WHY IT CANCELLED
 
-A reply whose `stopReason` is not `end_turn` now arrives behind a line saying
-so, with the partial text kept underneath. Raw payloads carry `stop_reason` and
-`incomplete`.
+xAI's documentation lists `end.stopReason` as one of `end_turn`, `max_tokens`,
+`max_turn_requests`, `refusal`, `cancelled`, and says a turn ends early on
+interrupt, permission rejection, or the turn limit.
 
-Note for anyone reading the old version of this file: the stopReason is
-"cancelled". There is no "max_turns" value; that was a guess and it was wrong.
+In headless mode the usual cause is permission. There is nobody to approve a
+tool call. Proven by experiment rather than inferred:
 
-`grok_code_review` was the dangerous case. It ran on `--output-format plain`,
-which carries no stopReason at all, so the guard could not see it. Worse, a
-cancelled review came back as "no additional high-confidence findings" -- the
-exact phrase for a clean review. Silence that reads as approval is the worst
-failure a review tool can have. It now uses JSON like everything else, and its
-preamble trim is skipped on an incomplete reply so it cannot eat the warning.
+    task: create a file, then read it back
+    no permission mode    stopReason=cancelled  turns=1  file created: No
+    permission_mode=auto  stopReason=end_turn   turns=3  file created: Yes
 
-A timeout used to raise a bare "grok timed out after Ns", discarding the
-partial stdout that `TimeoutExpired` carries -- the only evidence of how far it
-got. Both streams are now included in the error.
+Read-only work was never gated -- `read_file`, `grep`, `list_dir` and even
+`git log --oneline` all completed either way. Only the write tripped it. The
+turn budget was ruled out separately: a cancel occurred on a run where
+`--max-turns` was not sent at all.
 
+The bridge's own log offered nothing: all 30 `handle_prompt.done` entries say
+`ok: true`, including the cancelled runs, and the CLI never logs a turn limit.
 
-Open: why does grok cancel itself?
-----------------------------------
+WHAT CHANGED
 
-The reporting is fixed; the cause is not. grok stops mid-work, exits 0, and
-says "cancelled", well inside the turn budget. It is not deterministic. It may
-be a failed tool call inside grok or a loop guard. Runs are still lost -- they
-are merely visible now. This is the next real question, and the hardest.
+- A reply whose `stopReason` is not `end_turn` arrives behind a line saying so,
+  with the partial text kept underneath, and the line names the likely cause.
+- Approval is granted by default, which is what stops the cancels. This is a
+  real grant: Grok can write files and run commands in the workspace without
+  asking. It was requested deliberately after the trade-off was put plainly.
+- `grok_code_review` moved off `--output-format plain`, which carries no
+  stopReason. A cancelled review used to come back as "no additional
+  high-confidence findings" -- the exact phrase for a clean one.
+- A timeout keeps the partial stdout that `TimeoutExpired` carries.
+
+Note for anyone reading an older copy of this file: the turn-limit reason is
+`max_turn_requests`. There is no `max_turns` stopReason; that was a guess.
 
 
 Open: the bridge is single-file-through
@@ -61,5 +67,6 @@ Open: no default max_turns
 --------------------------
 
 `--max-turns` is sent only when a caller supplies it, so the CLI's own default
-applies -- unknown, unpinned, and free to change on upgrade. Pinning a sane
-default would make behaviour reproducible.
+applies -- unknown, unpinned, and free to change on upgrade. Note that
+`num_turns` is documented as the same counter family, "not a guarantee of exact
+equality", so the two will not always agree.

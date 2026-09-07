@@ -187,7 +187,7 @@ def test_run_grok_builds_safe_default_command(
     assert "--prompt-file" in seen["args"]
     assert "-p" not in seen["args"]
     assert "--always-approve" not in seen["args"]
-    assert "--permission-mode" not in seen["args"]
+    assert seen["args"][seen["args"].index("--permission-mode") + 1] == "auto"
     assert seen["args"][seen["args"].index("--model") + 1] == "grok-4.6"
     assert "--output-format" in seen["args"]
     assert seen["kwargs"]["cwd"] == str(tmp_path)
@@ -286,7 +286,7 @@ def test_grok_ask_rejects_invalid_permission_mode(tmp_path: Path) -> None:
             )
 
 
-def test_grok_continue_default_omits_permission_mode(
+def test_grok_continue_also_carries_the_grant(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     seen = {}
@@ -299,7 +299,7 @@ def test_grok_continue_default_omits_permission_mode(
 
     server.grok_continue("say ok", str(tmp_path), 10)
 
-    assert "--permission-mode" not in seen["args"]
+    assert seen["args"][seen["args"].index("--permission-mode") + 1] == "auto"
 
 
 def test_code_review_uses_strict_review_flags(
@@ -329,7 +329,7 @@ def test_code_review_uses_strict_review_flags(
     # JSON, so a review that stopped early carries a stopReason and can be
     # labelled. Plain output has none, and silence then reads as approval.
     assert seen["args"][seen["args"].index("--output-format") + 1] == "json"
-    assert "--permission-mode" not in seen["args"]
+    assert seen["args"][seen["args"].index("--permission-mode") + 1] == "auto"
     prompt = seen["prompt"]
     assert "Do not inspect the workspace" in prompt
     assert "Primary analysis to challenge" in prompt
@@ -525,3 +525,60 @@ def test_timeout_reports_what_grok_had_written(
     assert "timed out after 10s" in message
     assert "partial work so far" in message
     assert "a warning" in message
+
+
+def test_cancelled_warning_names_the_likely_cause(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # "cancelled" on its own is a mystery. In headless it almost always means a
+    # tool needed approval and nobody was there, which the caller can act on.
+    monkeypatch.setattr(server.subprocess, "run", _completed({
+        "text": "I'll create the file.",
+        "stopReason": "cancelled",
+        "num_turns": 1,
+    }))
+
+    answer = server.grok_ask("prompt", workspace=str(tmp_path), timeout_s=10)
+
+    assert "needed approval" in answer
+    assert "permission_mode" in answer
+
+
+def test_turn_limit_warning_names_its_own_cause(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(server.subprocess, "run", _completed({
+        "text": "partial",
+        "stopReason": "max_turn_requests",
+        "num_turns": 8,
+    }))
+
+    answer = server.grok_ask("prompt", workspace=str(tmp_path), timeout_s=10)
+
+    assert "raise max_turns" in answer
+    assert "needed approval" not in answer
+
+
+def test_every_call_carries_the_approval_grant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Without it, headless grok cancels the moment a tool needs approval.
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(
+            args, 0, stdout=json.dumps({"text": "ok", "stopReason": "end_turn"}), stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    server.grok_ask("prompt", workspace=str(tmp_path), timeout_s=10)
+
+    assert seen["args"][seen["args"].index("--permission-mode") + 1] == "auto"
+
+
+def test_an_unsupported_permission_mode_is_still_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unsupported permission_mode"):
+        server.grok_ask(
+            "prompt", workspace=str(tmp_path), timeout_s=10, permission_mode="yolo"
+        )

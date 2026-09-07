@@ -97,9 +97,15 @@ Advanced parameters:
 
 - `model`: Defaults to `grok-4.6` for ask, continue, and review. An explicit model overrides it.
 - `permission_mode`: Ask/continue accept `acceptEdits` or `auto`; both send
-  `--permission-mode auto`. Omission sends no permission flag and preserves the CLI default.
-  Other values are rejected. This is an explicit opt-in to agent edits, not a workspace sandbox.
-  Raw output includes the requested and effective modes. Code review exposes no edit-mode option.
+  `--permission-mode auto`, and that is also what a call sends when it passes nothing.
+  Other values are rejected. Raw output includes the requested and effective modes.
+
+  Approval is granted by default because headless grok has nobody to ask. Without
+  it, the first tool call needing a write or a non-read-only command ends the turn
+  as `stopReason: cancelled`, returning narration instead of an answer. The grant
+  is real: Grok can write files and run commands in the workspace without asking,
+  and the workspace is a working directory, not a security boundary. Point it at
+  a repository whose changes you can see and revert.
 
 - `self_check=true`: Passes `--check` for an extra Grok verification loop. Use sparingly because it
   costs more time and quota.
