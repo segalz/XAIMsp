@@ -65,8 +65,18 @@ _STOP_REASON_CAUSES = {
     "max_tokens": " It hit the output token ceiling.",
     "refusal": " The model declined to answer.",
 }
-_PERMISSION_MODE_ALLOWED = frozenset({"acceptEdits", "auto"})
+_PERMISSION_MODE_ALLOWED = frozenset({"acceptEdits", "auto", "readOnly"})
 _PERMISSION_MODE_EFFECTIVE = "auto"
+_PERMISSION_MODE_READ_ONLY = "readOnly"
+# Sent with a read-only call so Grok does not spend turns reaching for tools the
+# gate will refuse. It is a request, not the boundary -- withholding the approval
+# flag is what actually stops a write. Both, because each does a different job.
+READ_ONLY_RULES = (
+    "This is a read-only analysis request. Do not create, edit, delete or move "
+    "any file, and do not run commands that change anything. Reading, searching "
+    "and inspecting are what you have. If the task appears to need a change, say "
+    "what you would change and why, and stop there."
+)
 SECOND_REVIEW_RULES = (
     "You are a strict second code reviewer. Return findings only. "
     "Do not announce that you will review. Do not repeat primary-analysis findings "
@@ -124,8 +134,14 @@ def _normalize_permission_mode(permission_mode: Optional[str]) -> Optional[str]:
     requested = permission_mode.strip()
     if requested not in _PERMISSION_MODE_ALLOWED:
         raise ValueError(
-            "unsupported permission_mode; allowed values are 'acceptEdits' and 'auto'"
+            "unsupported permission_mode; allowed values are 'acceptEdits', "
+            "'auto' and 'readOnly'"
         )
+    if requested == _PERMISSION_MODE_READ_ONLY:
+        # Send no approval flag, so the CLI's own gate stands between Grok and
+        # any change. A run that then reaches for a write ends as "cancelled",
+        # which the caller now sees said plainly rather than silently.
+        return None
     return _PERMISSION_MODE_EFFECTIVE
 
 
@@ -305,6 +321,11 @@ def _run_grok(
     if max_turns is not None and max_turns < 1:
         raise ValueError("max_turns must be at least 1")
     effective_permission_mode = _normalize_permission_mode(permission_mode)
+
+    # Tell Grok as well as the gate. The gate is what stops a write; saying so
+    # in the rules keeps it from burning turns on attempts that will be refused.
+    if (permission_mode or "").strip() == _PERMISSION_MODE_READ_ONLY:
+        rules = f"{READ_ONLY_RULES}\n\n{rules}" if rules else READ_ONLY_RULES
 
     # Every path handed to the CLI has to be spelled the way the CLI's own
     # filesystem spells it. Under WSL that is /mnt/c/..., not C:\...

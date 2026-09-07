@@ -46,6 +46,10 @@ WHAT CHANGED
 - Approval is granted by default, which is what stops the cancels. This is a
   real grant: Grok can write files and run commands in the workspace without
   asking. It was requested deliberately after the trade-off was put plainly.
+- `permission_mode="readOnly"` withholds that approval for a single call, so
+  the CLI's gate stands, and appends a rule telling Grok the request is
+  read-only so it does not spend turns on tools that would be refused. The gate
+  is the boundary; the rule only saves effort. The default is unchanged.
 - `grok_code_review` moved off `--output-format plain`, which carries no
   stopReason. A cancelled review used to come back as "no additional
   high-confidence findings" -- the exact phrase for a clean one.

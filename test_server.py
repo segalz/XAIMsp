@@ -582,3 +582,84 @@ def test_an_unsupported_permission_mode_is_still_rejected(tmp_path: Path) -> Non
         server.grok_ask(
             "prompt", workspace=str(tmp_path), timeout_s=10, permission_mode="yolo"
         )
+
+
+def test_read_only_withholds_the_approval_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The gate, not the wording, is what stops a write.
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(
+            args, 0, stdout=json.dumps({"text": "ok", "stopReason": "end_turn"}), stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    server.grok_ask(
+        "prompt", workspace=str(tmp_path), timeout_s=10, permission_mode="readOnly"
+    )
+
+    assert "--permission-mode" not in seen["args"]
+
+
+def test_read_only_also_tells_grok_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # So it does not spend turns reaching for tools the gate will refuse.
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(
+            args, 0, stdout=json.dumps({"text": "ok", "stopReason": "end_turn"}), stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    server.grok_ask(
+        "prompt", workspace=str(tmp_path), timeout_s=10, permission_mode="readOnly"
+    )
+
+    rules = seen["args"][seen["args"].index("--rules") + 1]
+    assert "read-only analysis request" in rules
+
+
+def test_read_only_keeps_the_caller_own_rules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(
+            args, 0, stdout=json.dumps({"text": "ok", "stopReason": "end_turn"}), stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    server.grok_ask(
+        "prompt", workspace=str(tmp_path), timeout_s=10,
+        permission_mode="readOnly", rules="Answer in one paragraph.",
+    )
+
+    rules = seen["args"][seen["args"].index("--rules") + 1]
+    assert "read-only analysis request" in rules
+    assert "Answer in one paragraph." in rules
+
+
+def test_a_normal_call_carries_no_read_only_rules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(
+            args, 0, stdout=json.dumps({"text": "ok", "stopReason": "end_turn"}), stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    server.grok_ask("prompt", workspace=str(tmp_path), timeout_s=10)
+
+    assert "--rules" not in seen["args"]
+    assert seen["args"][seen["args"].index("--permission-mode") + 1] == "auto"

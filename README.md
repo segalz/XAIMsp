@@ -96,9 +96,13 @@ strict offline-review rules in the prompt, disables web search, and uses `--prom
 Advanced parameters:
 
 - `model`: Defaults to `grok-4.6` for ask, continue, and review. An explicit model overrides it.
-- `permission_mode`: Ask/continue accept `acceptEdits` or `auto`; both send
-  `--permission-mode auto`, and that is also what a call sends when it passes nothing.
-  Other values are rejected. Raw output includes the requested and effective modes.
+- `permission_mode`: Ask/continue accept `acceptEdits`, `auto` or `readOnly`.
+  `acceptEdits` and `auto` both send `--permission-mode auto`, and that is also what
+  a call sends when it passes nothing. `readOnly` sends no approval flag, so the
+  CLI's own gate stands between Grok and any change, and it appends a rule telling
+  Grok as much so it does not spend turns reaching for tools that will be refused.
+  The gate is the boundary; the rule only saves effort. Other values are rejected.
+  Raw output includes the requested and effective modes.
 
   Approval is granted by default because headless grok has nobody to ask. Without
   it, the first tool call needing a write or a non-read-only command ends the turn
