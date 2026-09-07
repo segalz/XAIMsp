@@ -326,7 +326,9 @@ def test_code_review_uses_strict_review_flags(
     assert result == "finding"
     assert "--rules" not in seen["args"]
     assert "--disable-web-search" in seen["args"]
-    assert seen["args"][seen["args"].index("--output-format") + 1] == "plain"
+    # JSON, so a review that stopped early carries a stopReason and can be
+    # labelled. Plain output has none, and silence then reads as approval.
+    assert seen["args"][seen["args"].index("--output-format") + 1] == "json"
     assert "--permission-mode" not in seen["args"]
     prompt = seen["prompt"]
     assert "Do not inspect the workspace" in prompt
@@ -471,3 +473,55 @@ def test_completed_run_carries_no_warning(
     assert result["text"] == "the actual answer"
     assert "incomplete" not in result
     assert result["stop_reason"] == "end_turn"
+
+
+def test_incomplete_code_review_keeps_its_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The preamble trim exists to drop narration before the first finding. On an
+    # incomplete review the preamble is the warning, and trimming it would hand
+    # back a tidy-looking findings list with nothing saying more were coming.
+    monkeypatch.setattr(server.subprocess, "run", _completed({
+        "text": "I'll check the inputs first.- Severity: P2\n- Classification: design risk",
+        "stopReason": "cancelled",
+        "num_turns": 1,
+    }))
+
+    result = server.grok_code_review("x", workspace=str(tmp_path), timeout_s=10)
+
+    assert result.startswith("[INCOMPLETE:")
+    assert "- Severity: P2" in result
+
+
+def test_complete_code_review_still_trims_preamble(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(server.subprocess, "run", _completed({
+        "text": "I will review now.- Severity: P2\n- Classification: design risk",
+        "stopReason": "end_turn",
+        "num_turns": 2,
+    }))
+
+    result = server.grok_code_review("x", workspace=str(tmp_path), timeout_s=10)
+
+    assert result.startswith("- Severity: P2")
+
+
+def test_timeout_reports_what_grok_had_written(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A bare "timed out after Ns" throws away the only evidence of how far it got.
+    def fake_run(args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            args, 10, output="partial work so far", stderr=b"a warning"
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as exc:
+        server._run_grok("prompt", str(tmp_path), 10)
+
+    message = str(exc.value)
+    assert "timed out after 10s" in message
+    assert "partial work so far" in message
+    assert "a warning" in message

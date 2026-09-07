@@ -1,62 +1,65 @@
 TODO
 ====
 
-Open: Grok answers arrive truncated -- diagnosed, not yet fixed
---------------------------------------------------------------
+Closed: Grok answers arrive truncated
+-------------------------------------
 
-Reported 2026-09-07, reproduced the same day. The earlier guesses in this file
-were wrong and are corrected below.
+Reported, reproduced and handled 2026-09-07.
 
-WHAT ACTUALLY HAPPENS
+There are two ways a run ends early, and the bridge treated them differently:
 
-There are two ways a run ends early, and the bridge treats them very
-differently:
+1. The turn budget is exhausted. grok exits 1 with `Error: max turns reached`,
+   and a non-zero return code already raised. This case was honest.
 
-1. The turn budget is exhausted.
-   grok exits 1 with `Error: max turns reached` on stderr. `_run_grok` raises
-   on a non-zero return code, so the caller sees a loud failure. This case is
-   already honest -- nothing to fix.
+2. The CLI stops itself. grok exits 0 with `"stopReason": "cancelled"` and a
+   `num_turns` BELOW the budget it was given. Only `proc.returncode` was
+   inspected, so this read as success.
 
-2. The CLI stops itself early.
-   grok exits 0 with `"stopReason": "cancelled"` and a `num_turns` BELOW the
-   budget it was given. `_run_grok` only inspects `proc.returncode`, so it
-   treats this as success, extracts the accumulated text, and hands it back.
+Case 2 was the defect. grok's `text` accumulates narration across turns, so a
+run that ends before the work is done leaves narration alone -- "I'll read the
+files, then count them" -- and that was handed back as the answer. Which of the
+two happens is not deterministic: the same prompt and budget produced each on
+different runs.
 
-Case 2 is the defect. grok's `text` field accumulates narration across turns,
-so when a run ends before the work is done, `text` holds the narration alone --
-"I'll read the files, then count them" -- with no answer in it. The caller
-receives that as a finished reply.
+A reply whose `stopReason` is not `end_turn` now arrives behind a line saying
+so, with the partial text kept underneath. Raw payloads carry `stop_reason` and
+`incomplete`.
 
-REPRODUCTION (2026-09-07, grok 1.0.13, model grok-4.6)
+Note for anyone reading the old version of this file: the stopReason is
+"cancelled". There is no "max_turns" value; that was a guess and it was wrong.
 
-Prompt: audit every file under tests/, count test functions per file, rank them.
-Workspace: C:\Develop\traidAi.
+`grok_code_review` was the dangerous case. It ran on `--output-format plain`,
+which carries no stopReason at all, so the guard could not see it. Worse, a
+cancelled review came back as "no additional high-confidence findings" -- the
+exact phrase for a clean review. Silence that reads as approval is the worst
+failure a review tool can have. It now uses JSON like everything else, and its
+preamble trim is skipped on an incomplete reply so it cannot eat the warning.
 
-    max_turns=1   RuntimeError "grok exited 1"          <- visible
-    max_turns=4   RuntimeError "grok exited 1"          <- visible
-    max_turns=8   returncode 0, stopReason "cancelled", <- SILENT
-                  num_turns 4, text 435 chars of pure
-                  narration ending "...so I'll count
-                  `def test_` in each file to finish
-                  the ranking."
+A timeout used to raise a bare "grok timed out after Ns", discarding the
+partial stdout that `TimeoutExpired` carries -- the only evidence of how far it
+got. Both streams are now included in the error.
 
-Note stopReason is "cancelled", not "max_turns". A field named max_turns does
-not appear at all; the earlier note in this file guessed wrong.
 
-This is not hypothetical: it hit the F5 review in the traidAi work on the same
-day. A decision request came back as four narration fragments with no decision,
-no error, and no indication anything was missing.
+Open: why does grok cancel itself?
+----------------------------------
 
-THE FIX
+The reporting is fixed; the cause is not. grok stops mid-work, exits 0, and
+says "cancelled", well inside the turn budget. It is not deterministic. It may
+be a failed tool call inside grok or a loop guard. Runs are still lost -- they
+are merely visible now. This is the next real question, and the hardest.
 
-`_run_grok` should stop treating a clean exit as a complete answer. A
-`stopReason` other than `end_turn` means the reply is partial, and the caller
-must be told -- raising is the safest default, since a partial analysis that
-looks complete is what makes this dangerous rather than merely annoying.
 
-`_result_payload` drops everything except `result["text"]` when raw_output is
-false, so today `stopReason` cannot reach a normal caller even if they wanted
-to check it themselves.
+Open: the bridge is single-file-through
+---------------------------------------
 
-Whatever shape the fix takes, the test for it must assert on a payload carrying
-stopReason "cancelled" with returncode 0. That combination is the whole bug.
+`_GROK_LOCK` serialises every invocation. Any attempt to fan work out into
+parallel grok calls will queue behind it and gain nothing. Worth knowing before
+anyone designs a swarm on top of this bridge.
+
+
+Open: no default max_turns
+--------------------------
+
+`--max-turns` is sent only when a caller supplies it, so the CLI's own default
+applies -- unknown, unpinned, and free to change on upgrade. Pinning a sane
+default would make behaviour reproducible.

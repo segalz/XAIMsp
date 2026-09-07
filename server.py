@@ -343,7 +343,14 @@ def _run_grok(
             except OSError as exc:
                 raise RuntimeError(f"failed to run grok: {exc}") from exc
             except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(f"grok timed out after {timeout_s}s") from exc
+                # Whatever grok had written before the clock ran out is the only
+                # evidence of how far it got. Discarding it turns a diagnosable
+                # timeout into a bare sentence.
+                raise RuntimeError(
+                    f"grok timed out after {timeout_s}s\n"
+                    f"partial stdout: {_decode_stream(exc.stdout)[-2000:]}\n"
+                    f"partial stderr: {_decode_stream(exc.stderr)[-1000:]}"
+                ) from exc
     finally:
         if prompt_file:
             try:
@@ -394,6 +401,20 @@ def _run_grok(
     if fallback:
         return {**base_result, "text": fallback}
     raise RuntimeError("grok completed without stdout text")
+
+
+def _decode_stream(value: Any) -> str:
+    """Best-effort text for a stream captured on a timeout.
+
+    subprocess.run with text=True normally hands back str, but TimeoutExpired
+    can carry bytes depending on where the timeout landed, and this runs while
+    already reporting a failure -- it must not raise a second one.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
 
 
 def _incomplete_banner(stop_reason: Any, data: dict[str, Any]) -> str:
@@ -578,13 +599,20 @@ Code or diff under review:
         reasoning_effort=reasoning_effort,
         disable_web_search=True,
         check=self_check,
-        output_format="plain",
+        # JSON, not plain, so a review that stopped early is visible. Plain
+        # output carries no stopReason, and a cancelled review then reads as
+        # "no additional high-confidence findings" -- indistinguishable from a
+        # clean one. Silence that looks like approval is the worst failure a
+        # review tool can have.
+        output_format="json",
     )
     text = str(result["text"])
-    first_finding = text.find("- Severity:")
-    if first_finding > 0:
-        text = text[first_finding:].strip()
-        result = {**result, "text": text}
+    # Trimming the preamble is a convenience for a finished review. On an
+    # incomplete one the preamble IS the warning, so leave it in place.
+    if not result.get("incomplete"):
+        first_finding = text.find("- Severity:")
+        if first_finding > 0:
+            result = {**result, "text": text[first_finding:].strip()}
     return _result_payload(result, raw_output)
 
 
