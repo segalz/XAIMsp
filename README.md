@@ -11,14 +11,13 @@ grok --no-auto-update --prompt-file /tmp/prompt.md --cwd /path/to/project --outp
 
 ## Requirements
 
-- Python 3.10+
-- `grok` on `PATH`
-- Auth already configured with `grok login`, or an environment supported by the CLI such as `XAI_API_KEY`
-- Optional: `GROK_CLI_PATH` if `grok` is not on `PATH`
-- On Windows with Smart App Control enabled: a WSL distribution, see below
+- Windows host with Python 3.10+ and WSL2
+- Grok installed and authenticated inside the selected Linux distro
+- Required `GROK_WSL_DISTRO` (for example `Ubuntu`)
+- Required `GROK_CLI_PATH`: absolute Linux executable path inside that distro
 
-Without WSL routing, `GROK_CLI_PATH` is strict: bare commands resolve through `PATH`, while path values must point to an
-executable file. Directories and non-executable files are rejected.
+The bridge uses WSL only. Native Windows Grok execution and native PATH lookup have been removed.
+Missing WSL configuration fails before any CLI process is started.
 
 ### Windows with WSL2
 
@@ -59,7 +58,7 @@ Adjust the checkout, distro, and Linux user paths for your installation. With
 `wsl.exe -d <distro> -- <absolute Linux executable>`. `GROK_CLI_PATH` is required
 and must be an absolute Linux path: WSL does not load login-shell PATH settings.
 Windows-side executable validation is skipped; WSL reports missing or non-executable binaries.
-Without the distro setting, the normal native invocation remains in use.
+The distro setting is required; there is no fallback to Windows `grok.exe`.
 
 Pass `workspace` as a host path such as `C:\Develop\XAIMsp`. The bridge converts
 drive paths for `--cwd` and its temporary `--prompt-file` to `/mnt/c/...`, assuming
@@ -72,33 +71,14 @@ A version check alone does not verify a model response.
 
 ## Install
 
-```bash
-cd /Users/zvisegal/devlope/XAIMsp
-/opt/homebrew/bin/python3.12 -m venv .venv
-. .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -e ".[dev]"
-pytest -q -p no:cacheprovider
-ruff check --no-cache .
+```powershell
+cd C:\Develop\XAIMsp
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 ```
 
-## MCP Host Config
-
-Add this server to the MCP host config. Prefer the project venv Python:
-
-```json
-{
-  "mcpServers": {
-    "xai": {
-      "command": "/Users/zvisegal/devlope/XAIMsp/.venv/bin/python",
-      "args": ["/Users/zvisegal/devlope/XAIMsp/server.py"]
-    }
-  }
-}
-```
-
-On Windows the CLI has to be reached through WSL; see
-[Windows with WSL2](#windows-with-wsl2) for the config that route needs.
+Use the MCP host configuration in [Windows with WSL2](#windows-with-wsl2).
+The Python MCP server runs on Windows; all Grok invocations run inside WSL.
 
 ## Tools
 
@@ -110,7 +90,7 @@ On Windows the CLI has to be reached through WSL; see
 `workspace` defaults to the MCP server's current directory. Pass the project path explicitly when
 you want Grok to inspect a specific repo.
 
-Use `grok_code_review` as a second-opinion reviewer after CodeHelper or manual analysis. It embeds
+Use `grok_code_review` as a second-opinion reviewer after the primary or manual analysis. It embeds
 strict offline-review rules in the prompt, disables web search, and uses `--prompt-file`.
 
 Advanced parameters:
@@ -132,9 +112,7 @@ Advanced parameters:
 
 Set `XAI_MCP_DEBUG=true` only when diagnosing bridge startup or CLI invocation issues.
 
-See [CLAUDE_CODE_USAGE.md](CLAUDE_CODE_USAGE.md) for the recommended Claude Code workflow and
-[CLAUDE_CODE_UPDATE_GROK_PATH.md](CLAUDE_CODE_UPDATE_GROK_PATH.md) for the latest path-handling
-update.
+See [CLAUDE_CODE_USAGE.md](CLAUDE_CODE_USAGE.md) for the recommended Claude Code workflow.
 
 ## Security
 

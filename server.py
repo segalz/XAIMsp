@@ -22,7 +22,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -105,8 +104,11 @@ def _normalize_permission_mode(permission_mode: Optional[str]) -> Optional[str]:
 
 
 def _wsl_distro() -> str:
-    """Name of the WSL distro to route through, or "" to run grok on Windows."""
-    return os.environ.get(ENV_GROK_WSL_DISTRO, "").strip()
+    """Require a WSL distro; native CLI execution is not supported."""
+    distro = os.environ.get(ENV_GROK_WSL_DISTRO, "").strip()
+    if not distro:
+        raise RuntimeError(f"{ENV_GROK_WSL_DISTRO} is required; this bridge uses WSL only")
+    return distro
 
 
 def _to_wsl_path(value: str) -> str:
@@ -123,10 +125,8 @@ def _to_wsl_path(value: str) -> str:
 
 
 def _grok_argv_prefix() -> list[str]:
-    """The argv head that starts the CLI, with or without the WSL hop."""
+    """Start the Linux CLI through WSL only."""
     distro = _wsl_distro()
-    if not distro:
-        return [_resolve_grok_command()]
 
     # WSL does not load login-shell PATH settings. Require an explicit Linux
     # path, but leave executable existence/permissions to the distro.
@@ -137,39 +137,6 @@ def _grok_argv_prefix() -> list[str]:
             f"{ENV_GROK_WSL_DISTRO} is set (for example /home/segal/.grok/bin/grok)"
         )
     return ["wsl.exe", "-d", distro, "--", configured]
-
-
-def _resolve_grok_command() -> str:
-    configured = os.environ.get(ENV_GROK_CLI_PATH, "").strip()
-    if configured:
-        found = shutil.which(configured)
-        if found and os.access(found, os.X_OK):
-            return found
-
-        configured_path = Path(configured).expanduser()
-        # os.sep is the separator that differs per platform; testing "/" alone
-        # matched nothing on Windows, so a full C:\...\grok path fell through to
-        # the "not on PATH" error instead of being validated as a path.
-        has_path_separator = os.sep in configured or (
-            os.altsep is not None and os.altsep in configured
-        )
-        if has_path_separator:
-            if not configured_path.exists():
-                raise RuntimeError(
-                    f"{ENV_GROK_CLI_PATH} points to a missing grok CLI: {configured}"
-                )
-            if not configured_path.is_file() or not os.access(configured_path, os.X_OK):
-                raise RuntimeError(
-                    f"{ENV_GROK_CLI_PATH} must point to an executable file: {configured}"
-                )
-            return str(configured_path)
-
-        raise RuntimeError(f"{ENV_GROK_CLI_PATH} command not found on PATH: {configured}")
-
-    found = shutil.which("grok")
-    if found:
-        return found
-    raise RuntimeError(f"grok CLI not found on PATH. Set {ENV_GROK_CLI_PATH} if needed.")
 
 
 def _last_json_object(text: str) -> Optional[dict[str, Any]]:
@@ -315,7 +282,7 @@ def _run_grok(
 
     # Every path handed to the CLI has to be spelled the way the CLI's own
     # filesystem spells it. Under WSL that is /mnt/c/..., not C:\...
-    for_cli = _to_wsl_path if _wsl_distro() else (lambda value: value)
+    for_cli = _to_wsl_path
 
     args = [
         *_grok_argv_prefix(),
@@ -369,7 +336,7 @@ def _run_grok(
                     timeout=timeout_s,
                 )
             except FileNotFoundError as exc:
-                raise RuntimeError("grok CLI not found on PATH") from exc
+                raise RuntimeError("wsl.exe not found; install WSL2") from exc
             except OSError as exc:
                 raise RuntimeError(f"failed to run grok: {exc}") from exc
             except subprocess.TimeoutExpired as exc:
@@ -607,7 +574,7 @@ def grok_version() -> str:
             timeout=15,
         )
     except FileNotFoundError as exc:
-        raise RuntimeError("grok CLI not found on PATH") from exc
+        raise RuntimeError("wsl.exe not found; install WSL2") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"grok --version failed: {(proc.stderr or proc.stdout).strip()}")
     return ((proc.stdout or "") + (proc.stderr or "")).strip()

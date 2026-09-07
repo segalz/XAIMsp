@@ -1,6 +1,5 @@
 import inspect
 import json
-import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -9,18 +8,18 @@ import pytest
 
 import server
 
-# Windows has no execute bit -- os.access(X_OK) is true for any readable file --
-# and shutil.which only finds names carrying a PATHEXT extension. A test that
-# turns on either fact is describing POSIX, not the bridge.
-posix_only = pytest.mark.skipif(
-    os.name == "nt", reason="depends on POSIX execute bits and extensionless PATH lookup"
-)
+
+def host_prompt_path(args):
+    value = args[args.index("--prompt-file") + 1]
+    if value.startswith("/mnt/"):
+        value = value[5].upper() + ":/" + value[7:]
+    return Path(value)
 
 
 @pytest.fixture(autouse=True)
 def isolate_bridge_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(server.ENV_GROK_WSL_DISTRO, raising=False)
-    monkeypatch.delenv(server.ENV_GROK_CLI_PATH, raising=False)
+    monkeypatch.setenv(server.ENV_GROK_WSL_DISTRO, "Ubuntu")
+    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, "/home/segal/.grok/bin/grok")
 
 
 @pytest.mark.parametrize("source,expected", [
@@ -44,7 +43,6 @@ def test_wsl_requires_absolute_linux_executable(monkeypatch, configured) -> None
 def test_wsl_run_converts_paths_and_cleans_prompt(monkeypatch, tmp_path, fails) -> None:
     monkeypatch.setenv(server.ENV_GROK_WSL_DISTRO, "Ubuntu")
     monkeypatch.setenv(server.ENV_GROK_CLI_PATH, "/home/segal/.grok/bin/grok")
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: pytest.fail("native resolver"))
     real_named_temp = tempfile.NamedTemporaryFile
     created = []
 
@@ -76,7 +74,6 @@ def test_wsl_run_converts_paths_and_cleans_prompt(monkeypatch, tmp_path, fails) 
 def test_wsl_version_uses_same_prefix(monkeypatch) -> None:
     monkeypatch.setenv(server.ENV_GROK_WSL_DISTRO, "Ubuntu")
     monkeypatch.setenv(server.ENV_GROK_CLI_PATH, "/home/segal/.grok/bin/grok")
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: pytest.fail("native resolver"))
 
     def fake_run(args, **kwargs):
         assert args == [
@@ -156,62 +153,17 @@ def test_extract_text_from_common_json_shapes() -> None:
     )
 
 
-def test_resolve_grok_command_uses_env_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    grok = tmp_path / "grok"
-    grok.write_text("#!/bin/sh\n", encoding="utf-8")
-    grok.chmod(0o755)
-    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, str(grok))
-
-    assert server._resolve_grok_command() == str(grok)
-
-
-@posix_only
-def test_resolve_grok_command_uses_path_for_bare_command(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    local_grok = tmp_path / "grok"
-    local_grok.write_text("not executable", encoding="utf-8")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    path_grok = bin_dir / "grok"
-    path_grok.write_text("#!/bin/sh\n", encoding="utf-8")
-    path_grok.chmod(0o755)
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, "grok")
-    monkeypatch.setenv("PATH", str(bin_dir))
-
-    assert server._resolve_grok_command() == str(path_grok)
-
-
-def test_resolve_grok_command_rejects_directory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, str(tmp_path))
-
-    with pytest.raises(RuntimeError, match="executable file"):
-        server._resolve_grok_command()
-
-
-@posix_only
-def test_resolve_grok_command_rejects_non_executable_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    grok = tmp_path / "grok"
-    grok.write_text("#!/bin/sh\n", encoding="utf-8")
-    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, str(grok))
-
-    with pytest.raises(RuntimeError, match="executable file"):
-        server._resolve_grok_command()
-
-
-def test_resolve_grok_command_rejects_missing_env_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(server.ENV_GROK_CLI_PATH, "/missing/grok")
-
-    with pytest.raises(RuntimeError, match="GROK_CLI_PATH"):
-        server._resolve_grok_command()
+@pytest.mark.parametrize("distro", [None, "", "  "])
+def test_missing_distro_never_launches_process(monkeypatch, distro):
+    if distro is None:
+        monkeypatch.delenv(server.ENV_GROK_WSL_DISTRO)
+    else:
+        monkeypatch.setenv(server.ENV_GROK_WSL_DISTRO, distro)
+    monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: pytest.fail("launched"))
+    with pytest.raises(RuntimeError, match="WSL only"):
+        server.grok_version()
+    with pytest.raises(RuntimeError, match="WSL only"):
+        server._run_grok("prompt", "C:/Develop", 10)
 
 
 def test_run_grok_builds_safe_default_command(
@@ -224,13 +176,14 @@ def test_run_grok_builds_safe_default_command(
         seen["kwargs"] = kwargs
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
 
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     result = server.grok_ask("say ok", str(tmp_path), 10)
 
     assert result == "ok"
-    assert seen["args"][:2] == ["grok", "--no-auto-update"]
+    assert seen["args"][:6] == [
+        "wsl.exe", "-d", "Ubuntu", "--", "/home/segal/.grok/bin/grok", "--no-auto-update"
+    ]
     assert "--prompt-file" in seen["args"]
     assert "-p" not in seen["args"]
     assert "--always-approve" not in seen["args"]
@@ -262,7 +215,6 @@ def test_empty_resume_uses_continue(
         seen["args"] = args
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
 
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     server.grok_continue("say ok", str(tmp_path), 10, resume="")
@@ -280,7 +232,6 @@ def test_grok_ask_accept_edits_permission_mode(
         seen["args"] = args
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
 
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     result = server.grok_ask(
@@ -307,7 +258,6 @@ def test_grok_ask_auto_permission_mode(
         seen["args"] = args
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
 
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     result = server.grok_ask(
@@ -345,7 +295,6 @@ def test_grok_continue_default_omits_permission_mode(
         seen["args"] = args
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
 
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     server.grok_continue("say ok", str(tmp_path), 10)
@@ -360,12 +309,11 @@ def test_code_review_uses_strict_review_flags(
 
     def fake_run(args, **kwargs):
         seen["args"] = args
-        seen["prompt"] = Path(args[args.index("--prompt-file") + 1]).read_text(
+        seen["prompt"] = host_prompt_path(args).read_text(
             encoding="utf-8"
         )
         return subprocess.CompletedProcess(args, 0, stdout="finding", stderr="")
 
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     result = server.grok_code_review(
@@ -398,18 +346,17 @@ def test_prompt_uses_prompt_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 
     def fake_run(args, **kwargs):
         seen["args"] = args
-        prompt_file = Path(args[args.index("--prompt-file") + 1])
+        prompt_file = host_prompt_path(args)
         assert prompt_file.exists()
         assert "short prompt" in prompt_file.read_text(encoding="utf-8")
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"text": "ok"}), stderr="")
 
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     assert server._run_grok("short prompt", str(tmp_path), 10)["text"] == "ok"
     assert "--prompt-file" in seen["args"]
     assert "-p" not in seen["args"]
-    assert not Path(seen["args"][seen["args"].index("--prompt-file") + 1]).exists()
+    assert not host_prompt_path(seen["args"]).exists()
 
 
 def test_long_prompt_validation_does_not_leave_prompt_file(tmp_path: Path) -> None:
@@ -428,7 +375,6 @@ def test_json_without_text_raises_parse_error(
             args, 0, stdout=json.dumps({"session_id": "abc", "status": "ok"}), stderr=""
         )
 
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="without extractable response text"):
@@ -444,7 +390,6 @@ def test_code_review_trims_preamble(monkeypatch: pytest.MonkeyPatch, tmp_path: P
             stderr="",
         )
 
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     result = server.grok_code_review("x", workspace=str(tmp_path), timeout_s=10)
@@ -458,7 +403,6 @@ def test_raw_output_returns_debug_payload(monkeypatch: pytest.MonkeyPatch, tmp_p
             args, 0, stdout=json.dumps({"text": "ok"}), stderr="warn"
         )
 
-    monkeypatch.setattr(server, "_resolve_grok_command", lambda: "grok")
     monkeypatch.setattr(server.subprocess, "run", fake_run)
 
     result = server.grok_ask("prompt", workspace=str(tmp_path), timeout_s=10, raw_output=True)

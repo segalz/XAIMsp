@@ -5,83 +5,66 @@ This project exposes the local x.ai Grok CLI as an MCP server.
 Project path:
 
 ```text
-/Users/zvisegal/devlope/XAIMsp
+C:\Develop\XAIMsp
 ```
 
 ## Setup
 
-Prefer the project venv Python in Claude Code MCP config:
+The bridge runs the Linux Grok CLI inside WSL; there is no native Windows path.
+Both environment variables are required, and a missing one fails before any
+process starts. See [README.md](README.md) for why.
 
 ```json
 {
   "mcpServers": {
     "xai": {
-      "command": "/Users/zvisegal/devlope/XAIMsp/.venv/bin/python",
-      "args": ["/Users/zvisegal/devlope/XAIMsp/server.py"]
-    }
-  }
-}
-```
-
-If the venv is missing:
-
-```bash
-cd /Users/zvisegal/devlope/XAIMsp
-/opt/homebrew/bin/python3.12 -m venv .venv
-. .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -e ".[dev]"
-```
-
-If Claude Code cannot find `grok`, set `GROK_CLI_PATH` in the MCP server environment:
-
-```json
-{
-  "mcpServers": {
-    "xai": {
-      "command": "/Users/zvisegal/devlope/XAIMsp/.venv/bin/python",
-      "args": ["/Users/zvisegal/devlope/XAIMsp/server.py"],
+      "command": "C:\\Develop\\XAIMsp\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\Develop\\XAIMsp\\server.py"],
       "env": {
-        "GROK_CLI_PATH": "/Users/zvisegal/.local/bin/grok"
+        "PYTHONIOENCODING": "utf-8",
+        "GROK_WSL_DISTRO": "Ubuntu",
+        "GROK_CLI_PATH": "/home/segal/.grok/bin/grok"
       }
     }
   }
 }
 ```
 
-`GROK_CLI_PATH` is validated strictly:
+`GROK_CLI_PATH` names a path *inside* the distro and must be absolute:
+`wsl.exe -- <cmd>` runs no login shell, so a `PATH` entry the installer wrote
+into `.bashrc` has not been applied.
 
-- Leave it unset if `grok` is already on `PATH`.
-- A bare command such as `grok` resolves through `PATH`.
-- A path value must point to an executable file.
-- Directories and non-executable files are rejected with a clear config error.
-- Avoid relative local files such as `./grok` unless that is the intended executable.
+If the venv is missing:
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
+```
 
 Verify:
 
-```bash
-cd /Users/zvisegal/devlope/XAIMsp
-. .venv/bin/activate
-pytest -q -p no:cacheprovider
-ruff check --no-cache .
-python - <<'PY'
-import server
-print(server.grok_version())
-PY
+```powershell
+.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+.venv\Scripts\python.exe -c "import server; print(server.grok_version())"
 ```
+
+A version check only proves the CLI starts. Follow it with a small `grok_ask`
+to prove authentication and model access.
 
 ## Auth
 
-The bridge uses the local `grok` CLI login.
+Auth lives inside the distro, not on Windows. A Windows `grok login` does not
+count for this route.
 
-```bash
-grok models
+```powershell
+wsl -d Ubuntu -- bash -lc "~/.grok/bin/grok models"
 ```
 
 If needed:
 
-```bash
-grok login
+```powershell
+wsl -d Ubuntu -- bash -lc "~/.grok/bin/grok login"
 ```
 
 Failures can still happen when logged in, especially `402 Payment Required` or `429 Too Many Requests`.
@@ -91,11 +74,12 @@ Failures can still happen when logged in, especially `402 Payment Required` or `
 Use this policy:
 
 ```text
-CodeHelper first.
+Primary analysis first.
 Grok second for risky/complex changes.
 ```
 
-Use CodeHelper for repo navigation, file discovery, flow analysis, and normal code questions.
+Do the repo navigation, file discovery, flow analysis and ordinary code
+questions with whatever your primary analysis backend is.
 
 Use Grok only as a second reviewer for:
 
@@ -103,14 +87,14 @@ Use Grok only as a second reviewer for:
 - shared components
 - parser/subprocess/security-sensitive code
 - regression-sensitive diffs
-- “what did we miss?” checks after CodeHelper
+- “what did we miss?” checks after the primary pass
 
-Prefer the `grok_code_review` MCP tool. Send it focused snippets or diffs plus a concise CodeHelper summary. Do not use Grok as the primary code search tool.
+Prefer the `grok_code_review` MCP tool. Send it focused snippets or diffs plus a concise summary of the primary analysis. Do not use Grok as the primary code search tool.
 
 Good prompt shape:
 
 ```text
-CodeHelper found:
+Primary analysis found:
 ...
 
 Review this focused snippet/diff as a second reviewer.
@@ -139,10 +123,12 @@ Enable verbose debug logging by setting `XAI_MCP_DEBUG=true` in the MCP environm
 {
   "mcpServers": {
     "xai": {
-      "command": "/Users/zvisegal/devlope/XAIMsp/.venv/bin/python",
-      "args": ["/Users/zvisegal/devlope/XAIMsp/server.py"],
+      "command": "C:\\Develop\\XAIMsp\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\Develop\\XAIMsp\\server.py"],
       "env": {
-        "GROK_CLI_PATH": "/Users/zvisegal/.local/bin/grok",
+        "PYTHONIOENCODING": "utf-8",
+        "GROK_WSL_DISTRO": "Ubuntu",
+        "GROK_CLI_PATH": "/home/segal/.grok/bin/grok",
         "XAI_MCP_DEBUG": "true"
       }
     }
@@ -186,5 +172,3 @@ this for debugging parser or CLI behavior, not as the normal workflow. The dicti
 - `stderr`: The raw stderr from the CLI (useful for diagnosing warnings or authentication issue details).
 - `returncode`: The subprocess exit code.
 - `parsed`: The parsed JSON payload object (if JSON output format was used).
-
-See [CLAUDE_CODE_UPDATE_GROK_PATH.md](CLAUDE_CODE_UPDATE_GROK_PATH.md) for the latest short update.
