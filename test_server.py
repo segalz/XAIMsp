@@ -410,3 +410,64 @@ def test_raw_output_returns_debug_payload(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert result["text"] == "ok"
     assert result["stderr"] == "warn"
     assert result["parsed"] == {"text": "ok"}
+
+
+def _completed(payload: dict) -> object:
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload), stderr="")
+    return fake_run
+
+
+def test_self_cancelled_run_is_labelled_incomplete(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The real shape of the defect: grok exits 0, having stopped itself well
+    # inside the turn budget, leaving narration instead of an answer.
+    monkeypatch.setattr(server.subprocess, "run", _completed({
+        "text": "I'll read the files, then count them.",
+        "stopReason": "cancelled",
+        "num_turns": 4,
+    }))
+
+    answer = server.grok_ask("prompt", workspace=str(tmp_path), timeout_s=10)
+
+    assert answer.startswith("[INCOMPLETE:")
+    assert "cancelled" in answer
+    assert "after 4 turn(s)" in answer
+    # The partial text is kept -- the caller is warned, not deprived.
+    assert "I'll read the files, then count them." in answer
+
+
+def test_self_cancelled_run_flags_raw_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(server.subprocess, "run", _completed({
+        "text": "narration only",
+        "stopReason": "cancelled",
+        "num_turns": 4,
+    }))
+
+    result = server.grok_ask(
+        "prompt", workspace=str(tmp_path), timeout_s=10, raw_output=True
+    )
+
+    assert result["incomplete"] is True
+    assert result["stop_reason"] == "cancelled"
+
+
+def test_completed_run_carries_no_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(server.subprocess, "run", _completed({
+        "text": "the actual answer",
+        "stopReason": "end_turn",
+        "num_turns": 2,
+    }))
+
+    result = server.grok_ask(
+        "prompt", workspace=str(tmp_path), timeout_s=10, raw_output=True
+    )
+
+    assert result["text"] == "the actual answer"
+    assert "incomplete" not in result
+    assert result["stop_reason"] == "end_turn"

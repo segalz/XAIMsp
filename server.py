@@ -45,6 +45,9 @@ ENV_GROK_CLI_PATH = "GROK_CLI_PATH"
 # GROK_CLI_PATH is then read as a path inside that distro rather than on Windows.
 ENV_GROK_WSL_DISTRO = "GROK_WSL_DISTRO"
 _WINDOWS_DRIVE_PATH = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+# The only stopReason that means grok finished on its own terms. Anything else
+# -- "cancelled" is the one seen in practice -- means the reply is partial.
+_STOP_REASON_COMPLETE = "end_turn"
 _PERMISSION_MODE_ALLOWED = frozenset({"acceptEdits", "auto"})
 _PERMISSION_MODE_EFFECTIVE = "auto"
 SECOND_REVIEW_RULES = (
@@ -377,7 +380,12 @@ def _run_grok(
     if data:
         text = _extract_text_from_json(data)
         if text:
-            return {**base_result, "text": text, "parsed": data}
+            stop_reason = data.get("stopReason")
+            result = {**base_result, "text": text, "parsed": data, "stop_reason": stop_reason}
+            if stop_reason is not None and stop_reason != _STOP_REASON_COMPLETE:
+                result["incomplete"] = True
+                result["text"] = _incomplete_banner(stop_reason, data) + text
+            return result
         raise RuntimeError("grok completed without extractable response text")
 
     # Keep the bridge useful if the CLI changes its JSON shape or falls back to
@@ -386,6 +394,26 @@ def _run_grok(
     if fallback:
         return {**base_result, "text": fallback}
     raise RuntimeError("grok completed without stdout text")
+
+
+def _incomplete_banner(stop_reason: Any, data: dict[str, Any]) -> str:
+    """Say plainly that the reply below is not a finished answer.
+
+    grok's `text` accumulates narration across turns, so a run that ends before
+    the work is done leaves narration alone -- "I'll read the files, then count
+    them" -- with no result in it. Exhausting the turn budget exits non-zero and
+    already raises, but the CLI can also stop itself, exiting 0 with
+    stopReason "cancelled" and a turn count below the budget it was given. That
+    reads as success, and a partial analysis that looks complete is worse than
+    an error, because nothing prompts the caller to run it again.
+    """
+    turns = data.get("num_turns")
+    turns_note = f" after {turns} turn(s)" if turns is not None else ""
+    return (
+        f"[INCOMPLETE: grok stopped with stopReason={stop_reason!r}{turns_note}, "
+        "so what follows is whatever it had produced by then -- often narration "
+        "rather than a result. Do not treat it as a finished answer.]\n\n"
+    )
 
 
 def _result_payload(result: dict[str, Any], raw_output: bool) -> str | dict[str, Any]:

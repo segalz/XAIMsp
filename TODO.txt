@@ -1,35 +1,62 @@
 TODO
 ====
 
-Open: Grok answers arrive truncated
------------------------------------
+Open: Grok answers arrive truncated -- diagnosed, not yet fixed
+--------------------------------------------------------------
 
-Reported 2026-09-07. Some answers come back cut off mid-thought. Not yet
-reproduced deliberately, so the cause is still open. Three candidates, and the
-CLI's own JSON distinguishes them -- call with raw_output=true and read
-`stopReason` in the parsed payload before guessing:
+Reported 2026-09-07, reproduced the same day. The earlier guesses in this file
+were wrong and are corrected below.
 
-  end_turn   Grok finished on its own. A short answer here is Grok's choice,
-             not a bridge defect.
-  max_turns  The agent loop ran out of turns. _run_grok passes --max-turns only
-             when the caller supplies max_turns, so this points at the caller,
-             not the bridge default.
-  (absent)   No terminal JSON object at all usually means the process was
-             killed. _run_grok raises "grok timed out after Ns" on
-             subprocess.TimeoutExpired; timeout_s defaults to
-             DEFAULT_TIMEOUT_S and is capped at MAX_TIMEOUT_S.
+WHAT ACTUALLY HAPPENS
 
-Worth checking beyond stopReason:
+There are two ways a run ends early, and the bridge treats them very
+differently:
 
-- _last_json_object scans stdout and picks the best JSON object it finds. If
-  Grok emits a very large response, confirm the object is being parsed whole
-  rather than a partial one being selected. A truncation that happens here
-  would show as clean JSON with short text, and stopReason would still say
-  end_turn -- which is the case most likely to be misread as "Grok was brief".
-- The MCP host may cap tool-result size independently of anything the bridge
-  does. Compare the length the bridge returns against what the host displays
-  before concluding the bridge lost anything.
+1. The turn budget is exhausted.
+   grok exits 1 with `Error: max turns reached` on stderr. `_run_grok` raises
+   on a non-zero return code, so the caller sees a loud failure. This case is
+   already honest -- nothing to fix.
 
-First diagnostic step: reproduce with a prompt whose length is known, capture
-raw_output, and record stopReason together with len(stdout). Until that pair is
-in hand there is nothing to fix.
+2. The CLI stops itself early.
+   grok exits 0 with `"stopReason": "cancelled"` and a `num_turns` BELOW the
+   budget it was given. `_run_grok` only inspects `proc.returncode`, so it
+   treats this as success, extracts the accumulated text, and hands it back.
+
+Case 2 is the defect. grok's `text` field accumulates narration across turns,
+so when a run ends before the work is done, `text` holds the narration alone --
+"I'll read the files, then count them" -- with no answer in it. The caller
+receives that as a finished reply.
+
+REPRODUCTION (2026-09-07, grok 1.0.13, model grok-4.6)
+
+Prompt: audit every file under tests/, count test functions per file, rank them.
+Workspace: C:\Develop\traidAi.
+
+    max_turns=1   RuntimeError "grok exited 1"          <- visible
+    max_turns=4   RuntimeError "grok exited 1"          <- visible
+    max_turns=8   returncode 0, stopReason "cancelled", <- SILENT
+                  num_turns 4, text 435 chars of pure
+                  narration ending "...so I'll count
+                  `def test_` in each file to finish
+                  the ranking."
+
+Note stopReason is "cancelled", not "max_turns". A field named max_turns does
+not appear at all; the earlier note in this file guessed wrong.
+
+This is not hypothetical: it hit the F5 review in the traidAi work on the same
+day. A decision request came back as four narration fragments with no decision,
+no error, and no indication anything was missing.
+
+THE FIX
+
+`_run_grok` should stop treating a clean exit as a complete answer. A
+`stopReason` other than `end_turn` means the reply is partial, and the caller
+must be told -- raising is the safest default, since a partial analysis that
+looks complete is what makes this dangerous rather than merely annoying.
+
+`_result_payload` drops everything except `result["text"]` when raw_output is
+false, so today `stopReason` cannot reach a normal caller even if they wanted
+to check it themselves.
+
+Whatever shape the fix takes, the test for it must assert on a payload carrying
+stopReason "cancelled" with returncode 0. That combination is the whole bug.
