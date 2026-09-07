@@ -1,0 +1,35 @@
+TODO
+====
+
+Open: Grok answers arrive truncated
+-----------------------------------
+
+Reported 2026-09-07. Some answers come back cut off mid-thought. Not yet
+reproduced deliberately, so the cause is still open. Three candidates, and the
+CLI's own JSON distinguishes them -- call with raw_output=true and read
+`stopReason` in the parsed payload before guessing:
+
+  end_turn   Grok finished on its own. A short answer here is Grok's choice,
+             not a bridge defect.
+  max_turns  The agent loop ran out of turns. _run_grok passes --max-turns only
+             when the caller supplies max_turns, so this points at the caller,
+             not the bridge default.
+  (absent)   No terminal JSON object at all usually means the process was
+             killed. _run_grok raises "grok timed out after Ns" on
+             subprocess.TimeoutExpired; timeout_s defaults to
+             DEFAULT_TIMEOUT_S and is capped at MAX_TIMEOUT_S.
+
+Worth checking beyond stopReason:
+
+- _last_json_object scans stdout and picks the best JSON object it finds. If
+  Grok emits a very large response, confirm the object is being parsed whole
+  rather than a partial one being selected. A truncation that happens here
+  would show as clean JSON with short text, and stopReason would still say
+  end_turn -- which is the case most likely to be misread as "Grok was brief".
+- The MCP host may cap tool-result size independently of anything the bridge
+  does. Compare the length the bridge returns against what the host displays
+  before concluding the bridge lost anything.
+
+First diagnostic step: reproduce with a prompt whose length is known, capture
+raw_output, and record stopReason together with len(stdout). Until that pair is
+in hand there is nothing to fix.
