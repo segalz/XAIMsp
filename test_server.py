@@ -1,6 +1,7 @@
 import inspect
 import json
 import subprocess
+import time
 import tempfile
 from pathlib import Path
 
@@ -703,3 +704,83 @@ def test_the_default_ceiling_clears_real_work(monkeypatch: pytest.MonkeyPatch) -
     # The heaviest task measured against this bridge finished in 5 turns. A
     # default that could cut off ordinary work would be worse than none.
     assert server.DEFAULT_MAX_TURNS >= 25
+
+
+def test_calls_are_not_serialised(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # The bridge used to hold one mutex across every invocation, so a second
+    # caller waited for the first even though grok sessions are independent
+    # processes.
+    import threading
+
+    live = 0
+    peak = 0
+    guard = threading.Lock()
+    entered = threading.Event()
+
+    def fake_run(args, **kwargs):
+        nonlocal live, peak
+        with guard:
+            live += 1
+            peak = max(peak, live)
+        # Hold the slot long enough that a serialising bridge could not overlap.
+        entered.set()
+        time.sleep(0.15)
+        with guard:
+            live -= 1
+        return subprocess.CompletedProcess(
+            args, 0, stdout=json.dumps({"text": "ok", "stopReason": "end_turn"}), stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    threads = [
+        threading.Thread(
+            target=server.grok_ask, args=("prompt", str(tmp_path), 10)
+        )
+        for _ in range(3)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert entered.is_set()
+    assert peak > 1, f"calls still ran one at a time (peak concurrency {peak})"
+
+
+def test_concurrency_is_bounded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Unbounded would let a caller start an arbitrary number of ~166MB processes.
+    import threading
+
+    live = 0
+    peak = 0
+    guard = threading.Lock()
+
+    def fake_run(args, **kwargs):
+        nonlocal live, peak
+        with guard:
+            live += 1
+            peak = max(peak, live)
+        time.sleep(0.05)
+        with guard:
+            live -= 1
+        return subprocess.CompletedProcess(
+            args, 0, stdout=json.dumps({"text": "ok", "stopReason": "end_turn"}), stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    threads = [
+        threading.Thread(target=server.grok_ask, args=("prompt", str(tmp_path), 10))
+        for _ in range(server.MAX_CONCURRENT_GROK + 4)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert peak <= server.MAX_CONCURRENT_GROK
+    # Asserting against the constant alone cannot notice the constant itself
+    # being raised, so pin the range too: enough to be worth parallelising,
+    # few enough that a burst does not start dozens of ~166MB processes.
+    assert 2 <= server.MAX_CONCURRENT_GROK <= 8

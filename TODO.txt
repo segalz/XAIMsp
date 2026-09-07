@@ -59,12 +59,21 @@ Note for anyone reading an older copy of this file: the turn-limit reason is
 `max_turn_requests`. There is no `max_turns` stopReason; that was a guess.
 
 
-Open: the bridge is single-file-through
----------------------------------------
+Closed: calls no longer queue behind one another
+-----------------------------------------------
 
-`_GROK_LOCK` serialises every invocation. Any attempt to fan work out into
-parallel grok calls will queue behind it and gain nothing. Worth knowing before
-anyone designs a swarm on top of this bridge.
+`_GROK_LOCK` serialised every invocation. It arrived with the first commit and
+recorded no reason, and the thing it was guarding turns out not to need it:
+grok sessions are independent processes, xAI ships an "agent swarm" that runs
+several on purpose, and a concurrent-auth-refresh bug that did exist was fixed
+before the version installed here (1.0.13).
+
+Measured before changing anything: four concurrent calls, four correct and
+uncrossed answers, 10.4s wall against 24.8s serialised.
+
+Replaced with a bounded semaphore of 4 rather than removed outright. Each grok
+is a ~166MB process and they all draw on one account pool, so the risk worth
+guarding is a burst, not overlap. Callers past the bound wait for a slot.
 
 
 Closed: the turn ceiling is pinned

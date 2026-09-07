@@ -126,6 +126,21 @@ Set `XAI_MCP_DEBUG=true` only when diagnosing bridge startup or CLI invocation i
 
 See [CLAUDE_CODE_USAGE.md](CLAUDE_CODE_USAGE.md) for the recommended Claude Code workflow.
 
+## Concurrency
+
+Calls run in parallel, up to `MAX_CONCURRENT_GROK` (4) at once. Grok sessions are
+independent processes -- xAI's own "agent swarm" runs several deliberately -- and
+four concurrent calls were measured here returning four correct, uncrossed
+answers in 10.4s against 24.8s serialised.
+
+The bound is there because each grok is a ~166MB process and every session draws
+on the same account pool, so an unbounded burst costs memory and quota rather
+than time. Anything past the limit waits for a slot; nothing is refused.
+
+An earlier version held a single mutex across every invocation, so a second
+caller always waited for the first. If you are building anything that fans work
+out across several calls, that is no longer the constraint it was.
+
 ## Security
 
 Grok is an agentic CLI. `workspace` is a working directory, not a security boundary. The bridge

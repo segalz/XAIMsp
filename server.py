@@ -33,7 +33,14 @@ from fastmcp import FastMCP
 mcp = FastMCP("xai")
 
 log = logging.getLogger("xai_grok_bridge")
-_GROK_LOCK = threading.Lock()
+# Grok sessions are independent processes -- xAI's own "agent swarm" runs several
+# at once -- and four concurrent calls were measured returning four correct,
+# uncrossed answers in 10.4s against 24.8s serialised. So the original mutex,
+# which arrived with the first commit and recorded no reason, was costing
+# throughput for nothing. A bound rather than no limit at all, because each grok
+# is a ~166MB process and they all draw on one account pool.
+MAX_CONCURRENT_GROK = 4
+_GROK_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_GROK)
 
 DEFAULT_TIMEOUT_S = 300
 # grok documents no default of its own for --max-turns, so without this the
@@ -377,7 +384,7 @@ def _run_grok(
         args.append("--check")
 
     try:
-        with _GROK_LOCK:
+        with _GROK_SLOTS:
             log.debug("running grok in %s with timeout=%ss", workspace, timeout_s)
             try:
                 proc = subprocess.run(
